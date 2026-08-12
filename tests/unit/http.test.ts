@@ -14,6 +14,18 @@ const json = (value: unknown, init: ResponseInit = {}): Response => new Response
 const make = (fetch: Fetch, extra: Partial<ConstructorParameters<typeof SnipeITHttpClient>[0]> = {}): SnipeITHttpClient =>
   new SnipeITHttpClient({ baseUrl: "https://snipe.example.test", token: "secret-token", fetch, ...extra });
 
+function reachableText(value: unknown, seen = new Set<object>()): string {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) return String(value);
+  if (seen.has(value)) return "<cycle>";
+  seen.add(value);
+  return Reflect.ownKeys(value).map((key) => {
+    let nested: unknown;
+    try { nested = (value as Record<PropertyKey, unknown>)[key]; }
+    catch { nested = "<unreadable>"; }
+    return `${String(key)}:${reachableText(nested, seen)}`;
+  }).join("|");
+}
+
 describe("SnipeITHttpClient", () => {
   it("validates origins and tokens and exposes safe defaults", () => {
     for (const baseUrl of ["http://example.test", "https://u:p@example.test", "https://example.test/x", "https://example.test/?x=1", "ftp://example.test"]) {
@@ -48,6 +60,57 @@ describe("SnipeITHttpClient", () => {
     })).resolves.toEqual({ id: 1 });
     expect(fetch).toHaveBeenCalledOnce();
     await expect(make(fetch).get("https://evil.test/api/v1/hardware")).rejects.toThrow("different origin");
+  });
+
+  it("enforces one body source and supports native ReadableStream requests", async () => {
+    const fetch = vi.fn<Fetch>(async (input, init) => {
+      expect((init as RequestInit & { duplex?: string } | undefined)?.duplex).toBe("half");
+      const request = new Request(input, init);
+      await expect(request.text()).resolves.toBe("stream-body");
+      return json({ ok: true });
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("stream-body"));
+        controller.close();
+      },
+    });
+    await expect(make(fetch).request("POST", "hardware", { body: stream })).resolves.toEqual({ ok: true });
+    expect(fetch).toHaveBeenCalledOnce();
+
+    const unusedFetch = vi.fn<Fetch>(async () => json({ ok: true }));
+    const client = make(unusedFetch);
+    await expect(client.raw("POST", "hardware", { body: "static", bodyFactory: () => "factory" }))
+      .rejects.toThrow("only one");
+    await expect(client.raw("POST", "hardware", { json: {}, bodyFactory: () => "factory" }))
+      .rejects.toThrow("only one");
+    await expect(client.raw("GET", "hardware", { body: "body" })).rejects.toThrow("GET requests must not include a body");
+    await expect(client.raw("HEAD", "hardware", { bodyFactory: () => "body" })).rejects.toThrow("HEAD requests must not include a body");
+    expect(unusedFetch).not.toHaveBeenCalled();
+
+    const producerError = new Error("producer failed");
+    const producer = vi.fn((): BodyInit | null => { throw producerError; });
+    await expect(client.raw("POST", "hardware", { bodyFactory: producer, retry: true })).rejects.toBe(producerError);
+    expect(producer).toHaveBeenCalledOnce();
+    expect(unusedFetch).not.toHaveBeenCalled();
+
+    const aborter = new AbortController();
+    const abortReason = new DOMException("cancelled during production", "AbortError");
+    const abortingProducer = vi.fn((): BodyInit | null => {
+      aborter.abort(abortReason);
+      return "must-not-send";
+    });
+    await expect(client.raw("POST", "hardware", { bodyFactory: abortingProducer, signal: aborter.signal }))
+      .rejects.toBe(abortReason);
+    expect(abortingProducer).toHaveBeenCalledOnce();
+    expect(unusedFetch).not.toHaveBeenCalled();
+
+    const nullFetch = vi.fn<Fetch>(async (_input, init) => {
+      expect(init?.body).toBeUndefined();
+      return new Response(null);
+    });
+    await expect(make(nullFetch).raw("POST", "hardware", { bodyFactory: () => null })).resolves.toBeInstanceOf(Response);
+    expect(nullFetch).toHaveBeenCalledOnce();
   });
 
   it("returns raw binary responses without consuming them", async () => {
@@ -130,6 +193,28 @@ describe("SnipeITHttpClient", () => {
     expect(mutationReadFetch).toHaveBeenCalledOnce();
   });
 
+  it("does not await stalled response cancellation before retrying", async () => {
+    let calls = 0;
+    let cancelCalls = 0;
+    const fetch = vi.fn<Fetch>(async () => {
+      calls += 1;
+      if (calls === 1) {
+        const body = new ReadableStream<Uint8Array>({
+          cancel() {
+            cancelCalls += 1;
+            return new Promise<void>(() => undefined);
+          },
+        });
+        return new Response(body, { status: 503 });
+      }
+      return json({ ok: true });
+    });
+    await expect(make(fetch, { timeoutMs: 10, retry: { maxRetries: 1, jitter: () => 0 } }).get("hardware"))
+      .resolves.toEqual({ ok: true });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(cancelCalls).toBe(1);
+  });
+
   it("does not retry mutation unless enabled and only replays safe bodies", async () => {
     const failing = vi.fn<Fetch>(async () => new Response(null, { status: 503 }));
     const http = make(failing, { retry: { maxRetries: 2, jitter: () => 0 } });
@@ -160,6 +245,41 @@ describe("SnipeITHttpClient", () => {
     await expect(make(pending, { timeoutMs: 2 }).get("hardware")).rejects.toBeInstanceOf(SnipeITTimeoutError);
   });
 
+  it("chunks long request deadlines and Retry-After delays", async () => {
+    vi.useFakeTimers();
+    const maxTimerMs = 2_147_483_647;
+    const thirtyDaysMs = 2_592_000_000;
+    const remainderMs = thirtyDaysMs - maxTimerMs;
+    try {
+      let timeoutSignal: AbortSignal | null | undefined;
+      const pendingFetch: Fetch = async (_input, init) => new Promise((_resolve, reject) => {
+        timeoutSignal = init?.signal;
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+      const timeoutRequest = make(pendingFetch, { timeoutMs: thirtyDaysMs, retry: { maxRetries: 0 } }).get("hardware");
+      const timeoutAssertion = expect(timeoutRequest).rejects.toBeInstanceOf(SnipeITTimeoutError);
+      await vi.advanceTimersByTimeAsync(maxTimerMs);
+      expect(timeoutSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(remainderMs);
+      await timeoutAssertion;
+
+      let calls = 0;
+      const retrying = make(async () => {
+        calls += 1;
+        return calls === 1
+          ? new Response(null, { status: 503, headers: { "retry-after": "2592000" } })
+          : json({ ok: true });
+      }, { retry: { maxRetries: 1, jitter: () => 0 } }).get("hardware");
+      await vi.advanceTimersByTimeAsync(maxTimerMs);
+      expect(calls).toBe(1);
+      await vi.advanceTimersByTimeAsync(remainderMs);
+      await expect(retrying).resolves.toEqual({ ok: true });
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("logs safe metadata only and validates request options", async () => {
     const logs: unknown[] = [];
     const client = make(async () => json({ ok: true }), { logger: { debug: (message, metadata) => logs.push({ message, metadata }) } });
@@ -171,6 +291,10 @@ describe("SnipeITHttpClient", () => {
     expect(serialized).not.toContain("body-secret");
     await expect(client.request("POST", "x", { json: {}, body: "x" })).rejects.toThrow("only one");
     expect(() => make(async () => json({}), { retry: { maxRetries: -1 } })).toThrow(RangeError);
+    expect(() => make(async () => json({}), { retry: { maxRetries: Number.MAX_SAFE_INTEGER + 1 } })).toThrow(/safe integer/u);
+    expect(() => make(async () => json({}), { retry: { maxRetries: 101 } })).toThrow(/no greater than 100/u);
+    await expect(client.get("hardware", undefined, { retry: { maxRetries: Number.MAX_SAFE_INTEGER + 1 } }))
+      .rejects.toThrow(/safe integer/u);
   });
 });
 
@@ -202,6 +326,77 @@ describe("audited HTTP lifecycle and secret safety", () => {
     expect(String(error)).not.toContain("REDIRECT-SECRET");
     expect(JSON.stringify((error as SnipeITApiError).metadata)).not.toContain("REDIRECT-SECRET");
     expect((error as SnipeITApiError).metadata.location).toBe("https://login.test");
+  });
+
+  it("does not retain transport objects, response fragments, or rejected URL credentials", async () => {
+    const sensitive = "UNIQUE-TRANSPORT-BEARER-SECRET";
+    const transportError = Object.assign(new Error(`transport ${sensitive}`), {
+      requestHeaders: { authorization: `Bearer ${sensitive}` },
+      responseBody: sensitive,
+    });
+    const assertSecretSafe = (error: unknown): void => {
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toHaveProperty("cause");
+      expect(reachableText(error)).not.toContain(sensitive);
+      expect(JSON.stringify(error)).not.toContain(sensitive);
+    };
+
+    const connection = await make(async () => { throw transportError; }, { retry: { maxRetries: 0 } })
+      .get("hardware").catch((error: unknown) => error);
+    assertSecretSafe(connection);
+
+    const timeoutFetch: Fetch = async (_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(transportError), { once: true });
+    });
+    const timeout = await make(timeoutFetch, { timeoutMs: 2, retry: { maxRetries: 0 } })
+      .get("hardware").catch((error: unknown) => error);
+    expect(timeout).toBeInstanceOf(SnipeITTimeoutError);
+    assertSecretSafe(timeout);
+
+    const failedBody = new ReadableStream<Uint8Array>({ start(controller) { controller.error(transportError); } });
+    const postHeader = await make(async () => new Response(failedBody), { retry: { maxRetries: 0 } })
+      .get("hardware").catch((error: unknown) => error);
+    expect(postHeader).toBeInstanceOf(SnipeITConnectionError);
+    assertSecretSafe(postHeader);
+
+    const invalidJson = await make(async () => new Response(`not-json-${sensitive}`), { retry: { maxRetries: 0 } })
+      .get("hardware").catch((error: unknown) => error);
+    expect(invalidJson).toBeInstanceOf(SnipeITResponseError);
+    assertSecretSafe(invalidJson);
+
+    const baseUrlError = (() => {
+      try {
+        return new SnipeITHttpClient({ baseUrl: `https://user:${sensitive}@example.test`, token: "x", fetch: async () => json({}) });
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(baseUrlError).toBeInstanceOf(TypeError);
+    assertSecretSafe(baseUrlError);
+  });
+
+  it("redacts bearer echoes from API-controlled error bodies and metadata", async () => {
+    const token = "secret-token";
+    const validation = await make(async () => Response.json({
+      messages: `Bearer ${token}`,
+      errors: { [token]: [token, { nested: `prefix-${token}-suffix` }] },
+    }, {
+      status: 422,
+      headers: { "x-request-id": token, "retry-after": token },
+    }), { retry: { maxRetries: 0 } }).get("hardware").catch((error: unknown) => error);
+    expect(validation).toBeInstanceOf(SnipeITValidationError);
+    expect(reachableText(validation)).not.toContain(token);
+    expect(JSON.stringify(validation)).not.toContain(token);
+
+    const plainText = await make(async () => new Response(`Bearer ${token}`, { status: 400 }), { retry: { maxRetries: 0 } })
+      .get("hardware").catch((error: unknown) => error);
+    expect(plainText).toBeInstanceOf(SnipeITClientError);
+    expect(reachableText(plainText)).not.toContain(token);
+
+    const envelope = await make(async () => json({ status: "error", messages: `Bearer ${token}` }))
+      .get("hardware").catch((error: unknown) => error);
+    expect(envelope).toBeInstanceOf(SnipeITApiError);
+    expect(reachableText(envelope)).not.toContain(token);
   });
 
   it("keeps timeout active after headers while consuming JSON", async () => {

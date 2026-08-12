@@ -31,9 +31,19 @@ export function serializeInput(input: Readonly<Record<string, unknown>>): Record
 
 export function extractPayload(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) throw new SnipeITResponseError("Unexpected response shape: expected an object");
-  if (value["status"] === "error") throw new SnipeITApiError(`API returned status=error in a 200 response body: ${String(value["messages"] ?? "Unknown API error")}`);
+  if (value["status"] === "error") throw new SnipeITApiError("API returned status=error in a 200 response body");
   if (value["status"] === "success" && "payload" in value) return isRecord(value["payload"]) ? value["payload"] : {};
   return value;
+}
+
+function extractResourcePayload(value: unknown, operation: "create" | "update"): Record<string, unknown> {
+  if (isRecord(value) && value["status"] === "success") {
+    if (!("payload" in value) || !isRecord(value["payload"])) {
+      throw new SnipeITResponseError(`Unexpected response shape for resource ${operation}: 'payload' must be an object`);
+    }
+    return value["payload"];
+  }
+  return extractPayload(value);
 }
 
 function identifier(value: number | string): string {
@@ -48,16 +58,20 @@ export class ResourceManager<T extends Resource, C extends Record<string, unknow
     if (!isRecord(value)) throw new SnipeITResponseError(`Unexpected response shape for list: expected object with 'rows', got ${typeof value}`);
     const rawRows = value["rows"];
     if (rawRows !== undefined && rawRows !== null && !Array.isArray(rawRows)) throw new SnipeITResponseError("Unexpected response shape: 'rows' must be an array");
-    const rows = (rawRows ?? []) as T[];
-    const result: ListResponse<T> = { ...value, rows };
+    const rows = rawRows ?? [];
+    if (!rows.every(isRecord)) throw new SnipeITResponseError("Unexpected response shape: every list row must be an object");
+    if ("total" in value && (!Number.isSafeInteger(value["total"]) || (value["total"] as number) < 0)) {
+      throw new SnipeITResponseError("Unexpected response shape: 'total' must be a non-negative safe integer");
+    }
+    const result: ListResponse<T> = { ...value, rows: rows as T[] };
     return result;
   }
 
   async *iterate(options: IterateOptions = {}): AsyncIterable<T> {
     const limit = options.limit;
     const pageSize = options.pageSize ?? 100;
-    if (limit !== undefined && (!Number.isInteger(limit) || limit < 0)) throw new RangeError("limit must be a non-negative integer");
-    if (!Number.isInteger(pageSize) || pageSize <= 0) throw new RangeError("pageSize must be a positive integer");
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) throw new RangeError("limit must be a non-negative safe integer");
+    if (!Number.isSafeInteger(pageSize) || pageSize <= 0) throw new RangeError("pageSize must be a positive safe integer");
     const query = options.query ?? {};
     if (Object.prototype.hasOwnProperty.call(query, "offset")) throw new TypeError("Do not pass 'offset' in iterate().query; pagination controls it internally. Use limit to cap results.");
     let yielded = 0;
@@ -83,12 +97,12 @@ export class ResourceManager<T extends Resource, C extends Record<string, unknow
 
   async create(input: C, request: JsonRequestOptions = {}): Promise<T> {
     const value = await this.http.post<unknown>(this.path, serializeInput(input), request);
-    return extractPayload(value) as T;
+    return extractResourcePayload(value, "create") as T;
   }
 
   async update(id: number | string, input: U, request: JsonRequestOptions = {}): Promise<T> {
     const value = await this.http.patch<unknown>(`${this.path}/${identifier(id)}`, serializeInput(input), request);
-    return extractPayload(value) as T;
+    return extractResourcePayload(value, "update") as T;
   }
 
   delete(id: number | string, request: JsonRequestOptions = {}): Promise<ApiObject | undefined> {
@@ -193,7 +207,7 @@ export class AssetsManager extends ResourceManager<Asset, AssetCreateInput, Asse
     if (isRecord(value) && "rows" in value) {
       if (!("total" in value)) throw new SnipeITNotFoundError(`Asset with serial ${JSON.stringify(serial)} not found.`);
       if (!Array.isArray(value["rows"])) throw new SnipeITResponseError(`Unexpected response shape for byserial ${JSON.stringify(serial)}: 'rows' must be an array`);
-      if (!Number.isInteger(value["total"]) || (value["total"] as number) < 0) throw new SnipeITResponseError(`Unexpected response shape for byserial ${JSON.stringify(serial)}: 'total' must be a non-negative integer`);
+      if (!Number.isSafeInteger(value["total"]) || (value["total"] as number) < 0) throw new SnipeITResponseError(`Unexpected response shape for byserial ${JSON.stringify(serial)}: 'total' must be a non-negative safe integer`);
       const rows = value["rows"];
       const total = value["total"] as number;
       if (rows.length === 1 && total === 1) {
@@ -262,7 +276,7 @@ export class AssetsManager extends ResourceManager<Asset, AssetCreateInput, Asse
     const patch: Record<string, unknown> = {};
     for (const [label, newValue] of Object.entries(updates)) {
       const entry = asset.custom_fields[label];
-      if (!isRecord(entry) || typeof entry["field"] !== "string") {
+      if (!isRecord(entry) || typeof entry["field"] !== "string" || entry["field"].trim() === "") {
         const available = Object.keys(asset.custom_fields).sort().join(", ");
         throw new SnipeITStateError(`Custom field ${JSON.stringify(label)} is unknown or malformed. Available labels: ${available}`);
       }
@@ -270,7 +284,7 @@ export class AssetsManager extends ResourceManager<Asset, AssetCreateInput, Asse
     }
     if (Object.keys(patch).length === 0) return { ...asset };
     const response = await this.http.patch<unknown>(`hardware/${identifier(asset.id)}`, patch, request);
-    const payload = extractPayload(response);
+    const payload = extractResourcePayload(response, "update");
     const payloadFields = payload["custom_fields"];
     const nestedFieldsAreAuthoritative = isRecord(payloadFields);
     const fieldSource = nestedFieldsAreAuthoritative ? payloadFields : asset.custom_fields;
@@ -337,13 +351,17 @@ export class AssetsManager extends ResourceManager<Asset, AssetCreateInput, Asse
     headers.set("accept", "application/pdf, application/json");
     const response = await this.http.raw("POST", "hardware/labels", { ...request, headers, json: { asset_tags: tags } });
     const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
-    if (contentType.includes("application/pdf")) return response.blob();
+    if (contentType.includes("application/pdf")) {
+      const pdf = await response.blob();
+      if (pdf.size === 0) throw new SnipeITResponseError("Unexpected hardware/labels response: PDF body must not be empty");
+      return pdf;
+    }
     let value: unknown;
     try { value = await response.json(); }
-    catch (cause) {
+    catch {
       throw new SnipeITResponseError("Unexpected hardware/labels response: expected PDF or JSON", {
         method: "POST", path: "/api/v1/hardware/labels", status: response.status,
-      }, { cause });
+      });
     }
     const payload = extractPayload(value);
     const encoded = payload["pdf"];
@@ -352,8 +370,9 @@ export class AssetsManager extends ResourceManager<Asset, AssetCreateInput, Asse
     }
     let binary: string;
     try { binary = globalThis.atob(encoded); }
-    catch (cause) { throw new SnipeITResponseError("Invalid base64 PDF in hardware/labels response", undefined, { cause }); }
+    catch { throw new SnipeITResponseError("Invalid base64 PDF in hardware/labels response"); }
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    if (bytes.byteLength === 0) throw new SnipeITResponseError("Unexpected hardware/labels response: decoded PDF must not be empty");
     return new Blob([bytes], { type: "application/pdf" });
   }
 }

@@ -26,7 +26,7 @@ console.log(asset.asset_tag);
 
 `baseUrl` must be an origin-only HTTPS URL. Plain HTTP is accepted only for `localhost`, `127.0.0.1`, and `::1`. Credentials, paths, query strings, and fragments are rejected. Tokens must be nonblank.
 
-Options include an injected `fetch`, `timeoutMs` (default `10000`), a structured `logger`, `userAgent`, and retry configuration. Default retries are three attempts after the initial request, statuses 429/500/502/503/504, 300 ms exponential base with full jitter, and `Retry-After` support. Only HEAD, GET, and OPTIONS retry by default. Opt a replay-safe mutation in explicitly with `{ retry: true }`; one-shot bodies require `bodyFactory`.
+Options include an injected `fetch`, `timeoutMs` (default `10000`), a structured `logger`, `userAgent`, and retry configuration. Default retries are three attempts after the initial request, statuses 429/500/502/503/504, 300 ms exponential base with full jitter, and `Retry-After` support; `maxRetries` must be a non-negative safe integer no greater than 100. Only HEAD, GET, and OPTIONS retry by default. Opt a replay-safe mutation in explicitly with `{ retry: true }`; one-shot bodies require `bodyFactory`. Low-level requests accept exactly one of `json`, `body`, or `bodyFactory`; GET and HEAD bodies are rejected.
 
 Every request accepts a caller `AbortSignal`. Caller cancellation is preserved as its abort reason; library timeouts throw `SnipeITTimeoutError`.
 

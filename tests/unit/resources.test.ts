@@ -7,12 +7,29 @@ import type { Asset } from "../../src/types.js";
 const manager = (fetch: Fetch): AssetsManager => new AssetsManager(new SnipeITHttpClient({ baseUrl: "https://example.test", token: "token", fetch, retry: { maxRetries: 0 } }));
 
 describe("resource shape and pagination behavior", () => {
-  it("normalizes missing/null rows and rejects malformed shapes", async () => {
+  it("normalizes missing/null rows and rejects malformed list and mutation shapes", async () => {
     await expect(manager(async () => Response.json({ total: 0 })).list()).resolves.toMatchObject({ rows: [] });
     await expect(manager(async () => Response.json({ rows: null })).list()).resolves.toMatchObject({ rows: [] });
     await expect(manager(async () => Response.json({ rows: {} })).list()).rejects.toBeInstanceOf(SnipeITResponseError);
+    for (const rows of [[null], ["bad"], [[]]]) {
+      await expect(manager(async () => Response.json({ rows })).list()).rejects.toBeInstanceOf(SnipeITResponseError);
+    }
+    for (const total of [null, "1", -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      await expect(manager(async () => Response.json({ total, rows: [] })).list()).rejects.toBeInstanceOf(SnipeITResponseError);
+    }
     await expect(manager(async () => Response.json([])).list()).rejects.toBeInstanceOf(SnipeITResponseError);
     await expect(manager(async () => Response.json([])).get(1)).rejects.toBeInstanceOf(SnipeITResponseError);
+
+    for (const payload of [null, "bad", 1, []]) {
+      const malformed = manager(async () => Response.json({ status: "success", payload }));
+      await expect(malformed.create({ statusId: 1, modelId: 2 })).rejects.toBeInstanceOf(SnipeITResponseError);
+      await expect(malformed.update(1, {})).rejects.toBeInstanceOf(SnipeITResponseError);
+    }
+    for (const envelope of [{ status: "success" }, { status: "success", messages: "created" }]) {
+      const missing = manager(async () => Response.json(envelope));
+      await expect(missing.create({ statusId: 1, modelId: 2 })).rejects.toBeInstanceOf(SnipeITResponseError);
+      await expect(missing.update(1, {})).rejects.toBeInstanceOf(SnipeITResponseError);
+    }
   });
 
   it("caps pages, stops on total, and rejects caller-controlled offset", async () => {
@@ -31,6 +48,10 @@ describe("resource shape and pagination behavior", () => {
     expect(requests).toEqual([{ limit: 2, offset: 0 }, { limit: 1, offset: 2 }]);
     await expect(async () => { for await (const _item of assets.iterate({ query: { offset: 1 } })) void _item; }).rejects.toThrow("offset");
     await expect(async () => { for await (const _item of assets.iterate({ pageSize: 0 })) void _item; }).rejects.toThrow(RangeError);
+    await expect(async () => { for await (const _item of assets.iterate({ limit: Number.MAX_SAFE_INTEGER + 1 })) void _item; })
+      .rejects.toThrow(/safe integer/u);
+    await expect(async () => { for await (const _item of assets.iterate({ pageSize: Number.MAX_SAFE_INTEGER + 1 })) void _item; })
+      .rejects.toThrow(/safe integer/u);
   });
 });
 
@@ -127,6 +148,9 @@ describe("asset custom fields", () => {
     await expect(assets.updateCustomFields({ ...source, id: null }, { Owner: "bob" })).rejects.toBeInstanceOf(SnipeITStateError);
     await expect(assets.updateCustomFields({ id: 1 }, { Owner: "bob" })).rejects.toBeInstanceOf(SnipeITStateError);
     await expect(assets.updateCustomFields(source, { Unknown: "x" })).rejects.toThrow("Available labels");
+    await expect(assets.updateCustomFields({
+      id: 1, custom_fields: { Broken: { field: "", value: "old" } },
+    }, { Broken: "new" })).rejects.toBeInstanceOf(SnipeITStateError);
   });
 
   it("writes top-level columns and reconciles null/echoed responses repeatedly", async () => {
@@ -204,6 +228,14 @@ describe("asset files and labels", () => {
       .rejects.toBeInstanceOf(SnipeITResponseError);
     await expect(manager(async () => Response.json({ status: "success", payload: { pdf: "%%%" } })).labels(["A"]))
       .rejects.toThrow("Invalid base64");
+    await expect(manager(async () => new Response(null, { headers: { "content-type": "application/pdf" } })).labels(["A"]))
+      .rejects.toThrow("must not be empty");
+    await expect(manager(async () => Response.json({ status: "success", payload: { pdf: "   " } })).labels(["A"]))
+      .rejects.toThrow("must not be empty");
+    const echoed = await manager(async () => Response.json({ status: "error", messages: "token" })).labels(["A"])
+      .catch((error: unknown) => error);
+    expect(String(echoed)).not.toContain("token");
+    expect(JSON.stringify(echoed)).not.toContain("token");
   });
 });
 
@@ -219,6 +251,12 @@ describe("user and accessory special actions", () => {
     await expect(new UsersManager(http).me()).resolves.toMatchObject({ username: "me" });
     await expect(new AccessoriesManager(http).checkinFromUser(4)).resolves.toEqual({ checkedIn: true });
     expect(paths).toEqual(["/api/v1/users/me", "/api/v1/accessories/4/checkin"]);
+
+    const nullActionHttp = new SnipeITHttpClient({
+      baseUrl: "https://example.test", token: "token",
+      fetch: async () => Response.json({ status: "success", payload: null }),
+    });
+    await expect(new AccessoriesManager(nullActionHttp).checkinFromUser(4)).resolves.toEqual({});
   });
 });
 
@@ -252,12 +290,17 @@ describe("audited Snipe-IT response-shape regressions", () => {
     await expect(empty.updateCustomFields(original, { Owner: "new" })).resolves.toMatchObject({ custom_fields: {} });
     const malformed = manager(async () => Response.json({ status: "success", payload: { id: 1, custom_fields: "bad" } }));
     await expect(malformed.updateCustomFields(original, { Owner: "new" })).rejects.toBeInstanceOf(SnipeITResponseError);
+    for (const envelope of [{ status: "success" }, { status: "success", payload: null }]) {
+      const missingPayload = manager(async () => Response.json(envelope));
+      await expect(missingPayload.updateCustomFields(original, { Owner: "new" })).rejects.toBeInstanceOf(SnipeITResponseError);
+    }
   });
 
   it.each([
     { total: 1, rows: { id: 7 } },
     { total: "1", rows: [{ id: 7 }] },
     { total: -1, rows: [] },
+    { total: Number.MAX_SAFE_INTEGER + 1, rows: [] },
     { total: 1, rows: ["bad"] },
   ])("classifies malformed byserial envelopes as response errors: %j", async (response) => {
     await expect(manager(async () => Response.json(response)).getBySerial("SER"))

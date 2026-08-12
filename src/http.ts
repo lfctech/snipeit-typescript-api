@@ -63,6 +63,10 @@ export interface JsonRequestOptions extends Omit<RequestOptions, "json" | "body"
 const DEFAULT_STATUSES = new Set([429, 500, 502, 503, 504]);
 const DEFAULT_METHODS = new Set(["HEAD", "GET", "OPTIONS"]);
 const REDACTED_HEADERS = new Set(["authorization", "cookie", "set-cookie", "x-api-key"]);
+const MAX_RETRIES = 100;
+const MAX_TIMER_MS = 2_147_483_647;
+const MAX_TOTAL_DELAY_MS = Number.MAX_SAFE_INTEGER;
+const BASE_URL_ERROR = "URL must be https://<host> or http://localhost (no credentials, no path).";
 
 interface ResolvedRetry {
   maxRetries: number;
@@ -81,7 +85,7 @@ export function parseRetryAfter(value: string | null, nowMs = Date.now()): numbe
   if (value === null || value.trim() === "") return undefined;
   const trimmed = value.trim();
   const seconds = Number(trimmed);
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1_000);
+  if (Number.isFinite(seconds)) return Math.min(MAX_TOTAL_DELAY_MS, Math.max(0, seconds * 1_000));
   const timestamp = Date.parse(trimmed);
   return Number.isNaN(timestamp) ? undefined : Math.max(0, timestamp - nowMs);
 }
@@ -95,8 +99,10 @@ export function redactHeaders(input?: HeadersInit): Record<string, string> {
   return output;
 }
 
-function nonNegativeInteger(value: number, name: string): number {
-  if (!Number.isInteger(value) || value < 0) throw new RangeError(`${name} must be a non-negative integer`);
+function retryCount(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_RETRIES) {
+    throw new RangeError(`maxRetries must be a non-negative safe integer no greater than ${MAX_RETRIES}`);
+  }
   return value;
 }
 
@@ -110,7 +116,7 @@ function asSet<T>(value: ReadonlySet<T> | readonly T[] | undefined, fallback: Re
 }
 
 function resolveRetry(options: RetryOptions = {}, defaults?: ResolvedRetry): ResolvedRetry {
-  const maxRetries = nonNegativeInteger(options.maxRetries ?? defaults?.maxRetries ?? 3, "maxRetries");
+  const maxRetries = retryCount(options.maxRetries ?? defaults?.maxRetries ?? 3);
   const backoffMs = nonNegativeFinite(options.backoffMs ?? defaults?.backoffMs ?? 300, "backoffMs");
   return {
     maxRetries,
@@ -128,16 +134,14 @@ function validateBaseUrl(value: string): { baseUrl: string; apiUrl: URL } {
   let parsed: URL;
   try {
     parsed = new URL(value);
-  } catch (cause) {
-    throw new TypeError(`URL must be https://<host> or http://localhost (no credentials, no path). Got: ${value}`, {
-      cause,
-    });
+  } catch {
+    throw new TypeError(BASE_URL_ERROR);
   }
   const localhost = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]" || parsed.hostname === "::1";
   const validProtocol = parsed.protocol === "https:" || (parsed.protocol === "http:" && localhost);
   const pathIsOrigin = parsed.pathname === "/" || parsed.pathname === "";
   if (!validProtocol || parsed.username !== "" || parsed.password !== "" || !pathIsOrigin || parsed.search !== "" || parsed.hash !== "") {
-    throw new TypeError(`URL must be https://<host> or http://localhost (no credentials, no path). Got: ${value}`);
+    throw new TypeError(BASE_URL_ERROR);
   }
   const baseUrl = parsed.origin;
   return { baseUrl, apiUrl: new URL("api/v1/", `${baseUrl}/`) };
@@ -157,6 +161,21 @@ function addQuery(url: URL, query: Query | undefined): void {
   }
 }
 
+function redactString(value: string, token: string): string {
+  return value.split(token).join("***");
+}
+
+function redactResponseValue(value: unknown, token: string): unknown {
+  if (typeof value === "string") return redactString(value, token);
+  if (Array.isArray(value)) return value.map((item) => redactResponseValue(item, token));
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      redactString(key, token), redactResponseValue(item, token),
+    ]));
+  }
+  return value;
+}
+
 function stringifyMessages(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
@@ -165,7 +184,7 @@ function stringifyMessages(value: unknown): string {
   return String(value);
 }
 
-function responseMetadata(response: Response, method: string, url: URL): ErrorMetadata {
+function responseMetadata(response: Response, method: string, url: URL, token: string): ErrorMetadata {
   const metadata: {
     method: string;
     path: string;
@@ -177,42 +196,43 @@ function responseMetadata(response: Response, method: string, url: URL): ErrorMe
   const requestId = response.headers.get("x-request-id");
   const retryAfter = response.headers.get("retry-after");
   const location = response.headers.get("location");
-  if (requestId !== null) metadata.requestId = requestId;
-  if (retryAfter !== null) metadata.retryAfter = retryAfter;
+  if (requestId !== null) metadata.requestId = redactString(requestId, token);
+  if (retryAfter !== null) metadata.retryAfter = redactString(retryAfter, token);
   if (location !== null) {
-    try { metadata.location = new URL(location, url).origin; }
+    try { metadata.location = redactString(new URL(location, url).origin, token); }
     catch { metadata.location = "<invalid>"; }
   }
   return metadata;
 }
 
-async function errorBody(response: Response): Promise<{ message: string; errors?: unknown }> {
-  const fallback = response.statusText || `HTTP ${response.status}`;
+async function errorBody(response: Response, token: string): Promise<{ message: string; errors?: unknown }> {
+  const fallback = redactString(response.statusText || `HTTP ${response.status}`, token);
   const text = await response.text();
   if (text === "") return { message: fallback };
   try {
     const body: unknown = JSON.parse(text);
     if (typeof body === "object" && body !== null && !Array.isArray(body)) {
       const record = body as Record<string, unknown>;
-      const message = stringifyMessages("messages" in record ? record["messages"] : fallback);
-      return "errors" in record ? { message, errors: record["errors"] } : { message };
+      const messages = redactResponseValue("messages" in record ? record["messages"] : fallback, token);
+      const message = stringifyMessages(messages);
+      return "errors" in record ? { message, errors: redactResponseValue(record["errors"], token) } : { message };
     }
     return { message: fallback };
   } catch {
-    return { message: text || fallback };
+    return { message: redactString(text || fallback, token) };
   }
 }
 
-async function raiseForStatus(response: Response, method: string, url: URL): Promise<void> {
+async function raiseForStatus(response: Response, method: string, url: URL, token: string): Promise<void> {
   if (response.status < 300) return;
-  const metadata = responseMetadata(response, method, url);
+  const metadata = responseMetadata(response, method, url, token);
   if (response.status < 400) {
     throw new SnipeITApiError(
       `Unexpected redirect (${response.status}) to ${metadata.location ?? "<unknown>"}. This is usually a reverse-proxy or authentication-middleware misconfiguration.`,
       metadata,
     );
   }
-  const body = await errorBody(response);
+  const body = await errorBody(response, token);
   if (response.status === 401) throw new SnipeITAuthenticationError(body.message, metadata);
   if (response.status === 404) throw new SnipeITNotFoundError(body.message, metadata);
   if (response.status === 422) throw new SnipeITValidationError(body.message, metadata, body.errors);
@@ -232,6 +252,33 @@ function isReplaySafe(body: BodyInit | null | undefined, factory: (() => BodyIni
   );
 }
 
+function retryDelay(retry: ResolvedRetry, attempt: number): number {
+  const exponential = Math.min(MAX_TOTAL_DELAY_MS, retry.backoffMs * 2 ** attempt);
+  const jittered = retry.jitter(exponential);
+  if (!Number.isFinite(jittered) || jittered < 0) throw new RangeError("retry jitter must return a non-negative finite number");
+  return Math.min(MAX_TOTAL_DELAY_MS, jittered);
+}
+
+function scheduleTimeout(callback: () => void, durationMs: number): () => void {
+  let remainingMs = Math.min(MAX_TOTAL_DELAY_MS, Math.max(0, durationMs));
+  let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+  let cancelled = false;
+  const scheduleNext = (): void => {
+    const delayMs = Math.min(MAX_TIMER_MS, remainingMs);
+    timer = globalThis.setTimeout(() => {
+      if (cancelled) return;
+      remainingMs -= delayMs;
+      if (remainingMs > 0) scheduleNext();
+      else callback();
+    }, delayMs);
+  };
+  scheduleNext();
+  return () => {
+    cancelled = true;
+    if (timer !== undefined) globalThis.clearTimeout(timer);
+  };
+}
+
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -239,13 +286,13 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
       return;
     }
-    const timer = globalThis.setTimeout(done, ms);
+    const cancelTimer = scheduleTimeout(done, ms);
     function done(): void {
       signal?.removeEventListener("abort", aborted);
       resolve();
     }
     function aborted(): void {
-      globalThis.clearTimeout(timer);
+      cancelTimer();
       reject(signal?.reason ?? new DOMException("The operation was aborted", "AbortError"));
     }
     signal?.addEventListener("abort", aborted, { once: true });
@@ -297,9 +344,9 @@ function manageResponse(response: Response, lifecycle: ResponseLifecycle): Respo
         if (lifecycle.callerSignal?.aborted === true && !lifecycle.timedOut()) {
           controller.error(lifecycle.callerSignal.reason ?? new DOMException("The operation was aborted", "AbortError"));
         } else if (lifecycle.timedOut()) {
-          controller.error(new SnipeITTimeoutError(`Request timed out after ${lifecycle.timeoutMs / 1_000} seconds.`, metadata, { cause }));
+          controller.error(new SnipeITTimeoutError(`Request timed out after ${lifecycle.timeoutMs / 1_000} seconds.`, metadata));
         } else {
-          controller.error(new SnipeITConnectionError(`Connection error while reading ${lifecycle.method} ${lifecycle.path}`, metadata, { cause }));
+          controller.error(new SnipeITConnectionError(`Connection error while reading ${lifecycle.method} ${lifecycle.path}`, metadata));
         }
       }
     },
@@ -354,8 +401,11 @@ export class SnipeITHttpClient {
     if (!headers.has("user-agent")) headers.set("user-agent", this.userAgent);
     headers.set("authorization", `Bearer ${this.#token}`);
 
-    if (options.json !== undefined && (options.body !== undefined || options.bodyFactory !== undefined)) {
-      throw new TypeError("Use only one of json, body, or bodyFactory");
+    const bodySourceCount = [options.json !== undefined, options.body !== undefined, options.bodyFactory !== undefined]
+      .filter(Boolean).length;
+    if (bodySourceCount > 1) throw new TypeError("Use only one of json, body, or bodyFactory");
+    if ((normalizedMethod === "GET" || normalizedMethod === "HEAD") && bodySourceCount > 0) {
+      throw new TypeError(`${normalizedMethod} requests must not include a body`);
     }
     let staticBody = options.body;
     if (options.json !== undefined) {
@@ -374,13 +424,13 @@ export class SnipeITHttpClient {
       const started = Date.now();
       const controller = new AbortController();
       let timedOut = false;
-      let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
+      let cancelTimeout: (() => void) | undefined;
       let cleaned = false;
       const callerSignal = options.signal;
       const cleanup = (): void => {
         if (cleaned) return;
         cleaned = true;
-        if (timeout !== undefined) globalThis.clearTimeout(timeout);
+        cancelTimeout?.();
         callerSignal?.removeEventListener("abort", forwardAbort);
       };
       const forwardAbort = (): void => {
@@ -389,8 +439,18 @@ export class SnipeITHttpClient {
       };
       if (callerSignal?.aborted === true) throw callerSignal.reason ?? new DOMException("The operation was aborted", "AbortError");
       callerSignal?.addEventListener("abort", forwardAbort, { once: true });
+      let body: BodyInit | null | undefined;
+      try { body = options.bodyFactory === undefined ? staticBody : options.bodyFactory(); }
+      catch (error) {
+        cleanup();
+        throw error;
+      }
+      if (controller.signal.aborted) {
+        cleanup();
+        throw callerSignal?.reason ?? new DOMException("The operation was aborted", "AbortError");
+      }
       const timeoutMs = nonNegativeFinite(options.timeoutMs ?? this.timeoutMs, "timeoutMs");
-      timeout = globalThis.setTimeout(() => {
+      cancelTimeout = scheduleTimeout(() => {
         timedOut = true;
         controller.abort(new DOMException("Request timed out", "TimeoutError"));
         cleanup();
@@ -398,34 +458,36 @@ export class SnipeITHttpClient {
 
       let response: Response;
       try {
-        const body = options.bodyFactory?.() ?? staticBody;
         const init: RequestInit = { method: normalizedMethod, headers, signal: controller.signal, redirect: "manual" };
-        if (body !== undefined && body !== null && normalizedMethod !== "GET" && normalizedMethod !== "HEAD") init.body = body;
+        if (body !== undefined && body !== null) {
+          init.body = body;
+          if (body instanceof ReadableStream) (init as RequestInit & { duplex: "half" }).duplex = "half";
+        }
         response = await this.fetchImpl(url, init);
-      } catch (cause) {
+      } catch {
         cleanup();
         if (controller.signal.aborted && !timedOut) throw callerSignal?.reason ?? new DOMException("The operation was aborted", "AbortError");
         if (timedOut) {
           this.logger?.warn?.("Snipe-IT request timed out", { method: normalizedMethod, path: url.pathname, timeoutMs });
-          throw new SnipeITTimeoutError(`Request timed out after ${timeoutMs / 1_000} seconds.`, { method: normalizedMethod, path: url.pathname }, { cause });
+          throw new SnipeITTimeoutError(`Request timed out after ${timeoutMs / 1_000} seconds.`, { method: normalizedMethod, path: url.pathname });
         }
         if (attempt < maxRetries) {
-          const delayMs = Math.max(0, retry.jitter(retry.backoffMs * 2 ** attempt));
+          const delayMs = retryDelay(retry, attempt);
           this.logger?.warn?.("Retrying Snipe-IT request after connection error", { method: normalizedMethod, path: url.pathname, attempt: attempt + 1, maxRetries, delayMs });
           await sleep(delayMs, callerSignal);
           continue;
         }
         this.logger?.warn?.("Snipe-IT connection error", { method: normalizedMethod, path: url.pathname });
-        throw new SnipeITConnectionError(`Connection error on ${normalizedMethod} ${url.pathname}`, { method: normalizedMethod, path: url.pathname }, { cause });
+        throw new SnipeITConnectionError(`Connection error on ${normalizedMethod} ${url.pathname}`, { method: normalizedMethod, path: url.pathname });
       }
 
       this.logger?.debug?.("Snipe-IT request completed", { method: normalizedMethod, path: url.pathname, status: response.status, elapsedMs: Date.now() - started });
       if (attempt < maxRetries && retry.statuses.has(response.status)) {
-        cleanup();
         const retryAfter = retry.respectRetryAfter ? parseRetryAfter(response.headers.get("retry-after")) : undefined;
-        const delayMs = retryAfter ?? Math.max(0, retry.jitter(retry.backoffMs * 2 ** attempt));
+        const delayMs = retryAfter ?? retryDelay(retry, attempt);
         this.logger?.warn?.("Retrying Snipe-IT request after HTTP status", { method: normalizedMethod, path: url.pathname, status: response.status, attempt: attempt + 1, maxRetries, delayMs });
-        try { await response.body?.cancel(); } catch { /* response cleanup is best effort */ }
+        try { void response.body?.cancel().catch(() => undefined); } catch { /* response cleanup is best effort */ }
+        cleanup();
         await sleep(delayMs, callerSignal);
         continue;
       }
@@ -439,10 +501,10 @@ export class SnipeITHttpClient {
         cleanup,
       });
       try {
-        await raiseForStatus(managed, normalizedMethod, url);
+        await raiseForStatus(managed, normalizedMethod, url, this.#token);
       } catch (error) {
         if (typeof error === "object" && error !== null) this.attemptCounts.set(error, attempt + 1);
-        try { await managed.body?.cancel(error); } catch { /* body may already be consumed */ }
+        try { void managed.body?.cancel(error).catch(() => undefined); } catch { /* body may already be consumed */ }
         cleanup();
         throw error;
       }
@@ -481,7 +543,7 @@ export class SnipeITHttpClient {
         const consumed = typeof error === "object" && error !== null ? this.attemptCounts.get(error) : undefined;
         if (!failedWhileReadingErrorResponse || consumed === undefined || attemptsUsed + consumed >= maxAttempts) throw error;
         attemptsUsed += consumed;
-        const delayMs = Math.max(0, retry.jitter(retry.backoffMs * 2 ** (attemptsUsed - 1)));
+        const delayMs = retryDelay(retry, attemptsUsed - 1);
         this.logger?.warn?.("Retrying Snipe-IT request after response read error", {
           method: normalizedMethod, path: this.resolveUrl(path).pathname, attempt: attemptsUsed, maxRetries, delayMs,
         });
@@ -494,7 +556,7 @@ export class SnipeITHttpClient {
         text = await response.text();
       } catch (error) {
         if (!(error instanceof SnipeITConnectionError) || attemptsUsed >= maxAttempts) throw error;
-        const delayMs = Math.max(0, retry.jitter(retry.backoffMs * 2 ** (attemptsUsed - 1)));
+        const delayMs = retryDelay(retry, attemptsUsed - 1);
         this.logger?.warn?.("Retrying Snipe-IT request after response read error", {
           method: normalizedMethod, path: this.resolveUrl(path).pathname, attempt: attemptsUsed, maxRetries, delayMs,
         });
@@ -510,15 +572,15 @@ export class SnipeITHttpClient {
       let value: unknown;
       try {
         value = JSON.parse(text);
-      } catch (cause) {
+      } catch {
         throw new SnipeITResponseError("Expected JSON response but received invalid or non-JSON content.", {
           method: normalizedMethod, path: this.resolveUrl(path).pathname, status: response.status,
-        }, { cause });
+        });
       }
       if (typeof value === "object" && value !== null && !Array.isArray(value)) {
         const record = value as Record<string, unknown>;
         if (record["status"] === "error") {
-          throw new SnipeITApiError(stringifyMessages(record["messages"] ?? "Unknown API error"), {
+          throw new SnipeITApiError(stringifyMessages(redactResponseValue(record["messages"] ?? "Unknown API error", this.#token)), {
             method: normalizedMethod, path: this.resolveUrl(path).pathname, status: response.status,
           });
         }
