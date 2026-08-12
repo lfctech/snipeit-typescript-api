@@ -1,0 +1,7 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "snipeit-portable-check",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": []
+}

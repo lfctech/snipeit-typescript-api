@@ -1,0 +1,83 @@
+name: snipeit-typescript-integration
+
+x-app-environment: &app-environment
+  APP_ENV: testing
+  APP_DEBUG: "false"
+  APP_KEY: "base64:k+B+nypzdhrwjOfa7XiIpcSzyIQgy7IgIoQbeGmlrQU="
+  APP_URL: "http://localhost:${SNIPEIT_DOCKER_PORT:-18080}"
+  APP_TIMEZONE: UTC
+  APP_LOCALE: en-US
+  MAX_RESULTS: "500"
+  PRIVATE_FILESYSTEM_DISK: local
+  PUBLIC_FILESYSTEM_DISK: local_public
+  DB_CONNECTION: mysql
+  DB_HOST: db
+  DB_PORT: "3306"
+  DB_DATABASE: snipeit
+  DB_USERNAME: snipeit
+  DB_PASSWORD: snipeitlocal
+  DB_DUMP_SKIP_SSL: "true"
+  MAIL_MAILER: log
+  IMAGE_LIB: gd
+  SESSION_DRIVER: file
+  CACHE_DRIVER: file
+  QUEUE_DRIVER: sync
+  LOG_CHANNEL: stderr
+  APP_FORCE_TLS: "false"
+  API_THROTTLE_PER_MINUTE: "1200"
+
+services:
+  db:
+    image: mariadb:11.4.7
+    restart: "no"
+    environment:
+      MYSQL_DATABASE: snipeit
+      MYSQL_USER: snipeit
+      MYSQL_PASSWORD: snipeitlocal
+      MYSQL_ROOT_PASSWORD: snipeitlocal
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - db-data:/var/lib/mysql
+
+  seeder:
+    image: snipe/snipe-it:v8.3.1-alpine
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *app-environment
+    command:
+      - sh
+      - -ec
+      - |
+        php -d memory_limit=512M artisan migrate --force
+        php -d memory_limit=512M artisan db:seed --force
+        php -d memory_limit=512M artisan passport:install -n
+        php -d memory_limit=512M artisan snipeit:make-api-key --user_id 1 --name typescript-integration -n --key-only > /api-token.txt
+        php -d memory_limit=512M artisan tinker --execute='\App\Models\Setting::where("id", 1)->update(["label2_enable" => 1]);'
+        test -s /api-token.txt
+    volumes:
+      - storage:/var/lib/snipeit
+      - ./api-token.txt:/api-token.txt
+
+  app:
+    image: snipe/snipe-it:v8.3.1-alpine
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+      seeder:
+        condition: service_completed_successfully
+    environment: *app-environment
+    ports:
+      - "${SNIPEIT_DOCKER_PORT:-18080}:80"
+    volumes:
+      - storage:/var/lib/snipeit
+
+volumes:
+  db-data:
+  storage:
