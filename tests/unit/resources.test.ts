@@ -71,9 +71,10 @@ describe("asset lookup and actions", () => {
   });
 
   it("covers checkin, audit variants, restore, due/overdue, licenses, and maintenance", async () => {
-    const calls: string[] = [];
+    const calls: Array<{ method: string; path: string; body?: Record<string, unknown> }> = [];
     const assets = manager(async (input, init) => {
-      calls.push(`${init?.method ?? "GET"} ${new URL(String(input)).pathname}`);
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : undefined;
+      calls.push({ method: init?.method ?? "GET", path: new URL(String(input)).pathname, ...(body === undefined ? {} : { body }) });
       if (new URL(String(input)).pathname.endsWith("maintenances")) return Response.json({ status: "success", payload: { id: 44 } });
       return Response.json({ id: 1 });
     });
@@ -84,12 +85,17 @@ describe("asset lookup and actions", () => {
     await assets.listAuditDue();
     await assets.listAuditOverdue();
     await assets.getLicenses(1);
-    await expect(assets.createMaintenance(1, { assetImprovement: "Repair", supplierId: 2, title: "Fix" })).resolves.toEqual({ id: 44 });
-    expect(calls).toEqual([
-      "POST /api/v1/hardware/1/checkin", "POST /api/v1/hardware/1/audit", "POST /api/v1/hardware/audit/1",
+    await expect(assets.createMaintenance(1, {
+      assetMaintenanceType: "Repair", name: "Fix", startDate: "2026-08-12", supplierId: 2,
+    })).resolves.toEqual({ id: 44 });
+    expect(calls.map(({ method, path }) => `${method} ${path}`)).toEqual([
+      "POST /api/v1/hardware/1/checkin", "POST /api/v1/hardware/1/audit", "POST /api/v1/hardware/1/audit",
       "POST /api/v1/hardware/1/restore", "GET /api/v1/hardware/audit/due", "GET /api/v1/hardware/audit/overdue",
-      "GET /api/v1/hardware/1/licenses", "POST /api/v1/hardware/1/maintenances",
+      "GET /api/v1/hardware/1/licenses", "POST /api/v1/maintenances",
     ]);
+    expect(calls.at(-1)?.body).toEqual({
+      asset_maintenance_type: "Repair", name: "Fix", start_date: "2026-08-12", supplier_id: 2, asset_id: 1,
+    });
   });
 
   it("omits a blank asset tag for server auto-increment", async () => {
@@ -177,21 +183,27 @@ describe("asset files and labels", () => {
     await expect(manager(async () => new Response(null)).downloadFile(1, 2)).rejects.toBeInstanceOf(SnipeITResponseError);
   });
 
-  it("requests one PDF accept header and rejects invalid labels/content", async () => {
+  it("accepts direct PDF or JSON/base64 labels and rejects invalid payloads", async () => {
     let requestHeaders = new Headers();
     let requestBody = "";
     const assets = manager(async (_input, init) => {
       requestHeaders = new Headers(init?.headers);
       requestBody = String(init?.body);
-      return new Response("%PDF", { headers: { "content-type": "application/pdf; charset=binary" } });
+      return Response.json({ status: "success", payload: { pdf: globalThis.btoa("%PDF") } });
     });
     const blob = await assets.labels(["A", { asset_tag: "B" }, " "]);
     expect(await blob.text()).toBe("%PDF");
-    expect(requestHeaders.get("accept")).toBe("application/pdf");
+    expect(blob.type).toBe("application/pdf");
+    expect(requestHeaders.get("accept")).toBe("application/pdf, application/json");
     expect(JSON.parse(requestBody)).toEqual({ asset_tags: ["A", "B"] });
+    const direct = manager(async () => new Response("%PDF-direct", { headers: { "content-type": "application/pdf" } }));
+    await expect((await direct.labels(["A"])).text()).resolves.toBe("%PDF-direct");
     await expect(assets.labels([])).rejects.toThrow("At least one");
     await expect(assets.labels([" ", { asset_tag: null }])).rejects.toThrow("No valid");
-    await expect(manager(async () => Response.json({ ok: true })).labels(["A"])).rejects.toThrow("Expected PDF");
+    await expect(manager(async () => Response.json({ status: "success", payload: {} })).labels(["A"]))
+      .rejects.toBeInstanceOf(SnipeITResponseError);
+    await expect(manager(async () => Response.json({ status: "success", payload: { pdf: "%%%" } })).labels(["A"]))
+      .rejects.toThrow("Invalid base64");
   });
 });
 

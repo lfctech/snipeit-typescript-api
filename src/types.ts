@@ -95,9 +95,14 @@ export interface CheckoutInput extends BaseCreateInput {
 
 export interface ActionOptions extends JsonRequestOptions { readonly refresh?: boolean; }
 export interface MaintenanceCreateInput extends BaseCreateInput {
-  readonly assetImprovement: string;
-  readonly supplierId: number;
-  readonly title: string;
+  readonly assetMaintenanceType: string;
+  readonly name: string;
+  readonly startDate: string;
+  readonly supplierId?: number | null;
+  readonly completionDate?: string | null;
+  readonly isWarranty?: boolean;
+  readonly notes?: string | null;
+  readonly cost?: number | null;
 }
 
 export interface AssetUpload {

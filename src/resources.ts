@@ -231,7 +231,7 @@ export class AssetsManager extends ResourceManager<Asset, AssetCreateInput, Asse
   }
 
   auditById(id: number | string, data: ApiObject = {}, request: JsonRequestOptions = {}): Promise<ApiObject> {
-    return this.http.post<ApiObject>(`hardware/audit/${identifier(id)}`, serializeInput(data), request);
+    return this.http.post<ApiObject>(`hardware/${identifier(id)}/audit`, serializeInput(data), request);
   }
 
   async restore(id: number | string, options: ActionOptions = {}): Promise<Asset | ApiObject> {
@@ -245,8 +245,8 @@ export class AssetsManager extends ResourceManager<Asset, AssetCreateInput, Asse
   getLicenses(id: number | string, request: JsonRequestOptions = {}): Promise<ApiObject> { return this.http.get<ApiObject>(`hardware/${identifier(id)}/licenses`, undefined, request); }
 
   async createMaintenance(id: number | string, input: MaintenanceCreateInput, request: JsonRequestOptions = {}): Promise<ApiObject> {
-    const value = await this.http.post<unknown>(`hardware/${identifier(id)}/maintenances`, serializeInput(input), request);
-    return isRecord(value) && isRecord(value["payload"]) ? value["payload"] : extractPayload(value);
+    const value = await this.http.post<unknown>("maintenances", serializeInput({ ...input, assetId: id }), request);
+    return extractPayload(value);
   }
 
   getCustomField<T = unknown>(asset: Asset, label: string, defaultValue?: T): unknown | T {
@@ -334,11 +334,27 @@ export class AssetsManager extends ResourceManager<Asset, AssetCreateInput, Asse
     });
     if (tags.length === 0) throw new TypeError("No valid asset tags found");
     const headers = new Headers(request.headers);
-    headers.set("accept", "application/pdf");
+    headers.set("accept", "application/pdf, application/json");
     const response = await this.http.raw("POST", "hardware/labels", { ...request, headers, json: { asset_tags: tags } });
     const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
-    if (!contentType.includes("application/pdf")) throw new SnipeITApiError(`Expected PDF from hardware/labels; got Content-Type: ${contentType || "unknown"}`, { method: "POST", path: "/api/v1/hardware/labels", status: response.status });
-    return response.blob();
+    if (contentType.includes("application/pdf")) return response.blob();
+    let value: unknown;
+    try { value = await response.json(); }
+    catch (cause) {
+      throw new SnipeITResponseError("Unexpected hardware/labels response: expected PDF or JSON", {
+        method: "POST", path: "/api/v1/hardware/labels", status: response.status,
+      }, { cause });
+    }
+    const payload = extractPayload(value);
+    const encoded = payload["pdf"];
+    if (typeof encoded !== "string" || encoded === "") {
+      throw new SnipeITResponseError("Unexpected hardware/labels response shape: expected a non-empty base64 PDF payload");
+    }
+    let binary: string;
+    try { binary = globalThis.atob(encoded); }
+    catch (cause) { throw new SnipeITResponseError("Invalid base64 PDF in hardware/labels response", undefined, { cause }); }
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    return new Blob([bytes], { type: "application/pdf" });
   }
 }
 
