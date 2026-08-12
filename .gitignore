@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+.pack-test/
+.DS_Store
+.env
+*.log
+docker/api-token.txt
+.wrangler/
