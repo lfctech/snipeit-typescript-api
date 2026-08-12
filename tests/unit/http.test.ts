@@ -103,6 +103,31 @@ describe("SnipeITHttpClient", () => {
     const connectionFetch = vi.fn<Fetch>(async () => { throw new TypeError("down"); });
     await expect(make(connectionFetch, { retry: { maxRetries: 2, jitter: () => 0 } }).get("hardware")).rejects.toBeInstanceOf(SnipeITConnectionError);
     expect(connectionFetch).toHaveBeenCalledTimes(3);
+
+    let readCalls = 0;
+    const readFetch = vi.fn<Fetch>(async () => {
+      readCalls += 1;
+      if (readCalls === 1) return new Response(new ReadableStream({ start(controller) { controller.error(new TypeError("reset after headers")); } }));
+      return json({ ok: true });
+    });
+    await expect(make(readFetch, { retry: { maxRetries: 1, jitter: () => 0 } }).get("hardware")).resolves.toEqual({ ok: true });
+    expect(readFetch).toHaveBeenCalledTimes(2);
+
+    let mixedCalls = 0;
+    const mixedFetch = vi.fn<Fetch>(async () => {
+      mixedCalls += 1;
+      if (mixedCalls === 1) return new Response(null, { status: 503 });
+      if (mixedCalls === 2) return new Response(new ReadableStream({ start(controller) { controller.error(new TypeError("reset after retry")); } }));
+      return json({ shouldNotBeReached: true });
+    });
+    await expect(make(mixedFetch, { retry: { maxRetries: 1, jitter: () => 0 } }).get("hardware"))
+      .rejects.toBeInstanceOf(SnipeITConnectionError);
+    expect(mixedFetch).toHaveBeenCalledTimes(2);
+
+    const mutationReadFetch = vi.fn<Fetch>(async () => new Response(new ReadableStream({ start(controller) { controller.error(new TypeError("reset")); } })));
+    await expect(make(mutationReadFetch, { retry: { maxRetries: 1, jitter: () => 0 } }).post("hardware", {}))
+      .rejects.toBeInstanceOf(SnipeITConnectionError);
+    expect(mutationReadFetch).toHaveBeenCalledOnce();
   });
 
   it("does not retry mutation unless enabled and only replays safe bodies", async () => {

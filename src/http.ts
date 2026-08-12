@@ -320,6 +320,7 @@ export class SnipeITHttpClient {
   private readonly retryDefaults: ResolvedRetry;
   private readonly logger: Logger | undefined;
   private readonly userAgent: string;
+  private readonly attemptCounts = new WeakMap<object, number>();
 
   constructor(options: SnipeITHttpOptions) {
     const validated = validateBaseUrl(options.baseUrl);
@@ -341,6 +342,10 @@ export class SnipeITHttpClient {
   }
 
   async raw(method: string, path: string, options: RequestOptions = {}): Promise<Response> {
+    return (await this.rawWithAttempts(method, path, options)).response;
+  }
+
+  private async rawWithAttempts(method: string, path: string, options: RequestOptions = {}): Promise<{ response: Response; attempts: number }> {
     const normalizedMethod = method.toUpperCase();
     const url = this.resolveUrl(path);
     addQuery(url, options.query);
@@ -436,41 +441,93 @@ export class SnipeITHttpClient {
       try {
         await raiseForStatus(managed, normalizedMethod, url);
       } catch (error) {
+        if (typeof error === "object" && error !== null) this.attemptCounts.set(error, attempt + 1);
         try { await managed.body?.cancel(error); } catch { /* body may already be consumed */ }
         cleanup();
         throw error;
       }
-      return managed;
+      return { response: managed, attempts: attempt + 1 };
     }
   }
 
   async request<T = Record<string, unknown>>(method: string, path: string, options: RequestOptions = {}): Promise<T | undefined> {
-    const response = await this.raw(method, path, options);
-    if (response.status === 204) return undefined;
-    const text = await response.text();
-    if (text === "") {
-      if (options.allowEmpty === true) return undefined;
-      throw new SnipeITResponseError(`Expected a JSON body from ${method.toUpperCase()}, but server returned an empty response.`, {
-        method: method.toUpperCase(), path: this.resolveUrl(path).pathname, status: response.status,
-      });
-    }
-    let value: unknown;
-    try {
-      value = JSON.parse(text);
-    } catch (cause) {
-      throw new SnipeITResponseError("Expected JSON response but received invalid or non-JSON content.", {
-        method: method.toUpperCase(), path: this.resolveUrl(path).pathname, status: response.status,
-      }, { cause });
-    }
-    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-      const record = value as Record<string, unknown>;
-      if (record["status"] === "error") {
-        throw new SnipeITApiError(stringifyMessages(record["messages"] ?? "Unknown API error"), {
-          method: method.toUpperCase(), path: this.resolveUrl(path).pathname, status: response.status,
+    const normalizedMethod = method.toUpperCase();
+    const requestRetry = typeof options.retry === "object" ? options.retry : {};
+    const retry = resolveRetry(requestRetry, this.retryDefaults);
+    const explicitlyEnabled = options.retry === true || (typeof options.retry === "object" && options.retry.enabled === true);
+    const methodAllowed = explicitlyEnabled || (options.retry !== false && retry.allowedMethods.has(normalizedMethod));
+    const replaySafe = options.json !== undefined || isReplaySafe(options.body, options.bodyFactory);
+    const maxRetries = methodAllowed && replaySafe ? retry.maxRetries : 0;
+    const maxAttempts = maxRetries + 1;
+    let attemptsUsed = 0;
+
+    while (attemptsUsed < maxAttempts) {
+      const retriesRemaining = maxAttempts - attemptsUsed - 1;
+      const boundedRetry: boolean | RequestRetryOptions = options.retry === false
+        ? false
+        : {
+            ...(typeof options.retry === "object" ? options.retry : {}),
+            ...(options.retry === true ? { enabled: true } : {}),
+            maxRetries: retriesRemaining,
+          };
+      const boundedOptions: RequestOptions = { ...options, retry: boundedRetry };
+      let response: Response;
+      try {
+        const raw = await this.rawWithAttempts(normalizedMethod, path, boundedOptions);
+        attemptsUsed += raw.attempts;
+        response = raw.response;
+      } catch (error) {
+        const failedWhileReadingErrorResponse = error instanceof SnipeITConnectionError && error.metadata.status !== undefined;
+        const consumed = typeof error === "object" && error !== null ? this.attemptCounts.get(error) : undefined;
+        if (!failedWhileReadingErrorResponse || consumed === undefined || attemptsUsed + consumed >= maxAttempts) throw error;
+        attemptsUsed += consumed;
+        const delayMs = Math.max(0, retry.jitter(retry.backoffMs * 2 ** (attemptsUsed - 1)));
+        this.logger?.warn?.("Retrying Snipe-IT request after response read error", {
+          method: normalizedMethod, path: this.resolveUrl(path).pathname, attempt: attemptsUsed, maxRetries, delayMs,
+        });
+        await sleep(delayMs, options.signal);
+        continue;
+      }
+      if (response.status === 204) return undefined;
+      let text: string;
+      try {
+        text = await response.text();
+      } catch (error) {
+        if (!(error instanceof SnipeITConnectionError) || attemptsUsed >= maxAttempts) throw error;
+        const delayMs = Math.max(0, retry.jitter(retry.backoffMs * 2 ** (attemptsUsed - 1)));
+        this.logger?.warn?.("Retrying Snipe-IT request after response read error", {
+          method: normalizedMethod, path: this.resolveUrl(path).pathname, attempt: attemptsUsed, maxRetries, delayMs,
+        });
+        await sleep(delayMs, options.signal);
+        continue;
+      }
+      if (text === "") {
+        if (options.allowEmpty === true) return undefined;
+        throw new SnipeITResponseError(`Expected a JSON body from ${normalizedMethod}, but server returned an empty response.`, {
+          method: normalizedMethod, path: this.resolveUrl(path).pathname, status: response.status,
         });
       }
+      let value: unknown;
+      try {
+        value = JSON.parse(text);
+      } catch (cause) {
+        throw new SnipeITResponseError("Expected JSON response but received invalid or non-JSON content.", {
+          method: normalizedMethod, path: this.resolveUrl(path).pathname, status: response.status,
+        }, { cause });
+      }
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+        const record = value as Record<string, unknown>;
+        if (record["status"] === "error") {
+          throw new SnipeITApiError(stringifyMessages(record["messages"] ?? "Unknown API error"), {
+            method: normalizedMethod, path: this.resolveUrl(path).pathname, status: response.status,
+          });
+        }
+      }
+      return value as T;
     }
-    return value as T;
+    throw new SnipeITConnectionError(`Connection error on ${normalizedMethod} ${this.resolveUrl(path).pathname}`, {
+      method: normalizedMethod, path: this.resolveUrl(path).pathname,
+    });
   }
 
   async get<T = Record<string, unknown>>(path: string, query?: Query, options: JsonRequestOptions = {}): Promise<T> {
