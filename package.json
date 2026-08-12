@@ -33,12 +33,13 @@
   "scripts": {
     "clean": "rm -rf dist coverage .pack-test",
     "build": "pnpm clean && tsc -p tsconfig.build.json && tsc -p tsconfig.node.json",
+    "prepack": "pnpm build",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:declarations": "pnpm build && node node_modules/typescript-5-7/bin/tsc -p tests/declarations/tsconfig.json",
     "test:examples": "pnpm build && tsc -p tsconfig.examples.json",
-    "test:pack": "pnpm build && node scripts/test-pack.mjs",
+    "test:pack": "node scripts/test-pack.mjs",
     "test:workers": "pnpm build && node scripts/test-worker.mjs",
     "test:docker": "pnpm build && node scripts/test-docker.mjs",
     "validate": "pnpm typecheck && pnpm test:coverage && pnpm test:declarations && pnpm test:examples && pnpm test:pack && pnpm test:workers"

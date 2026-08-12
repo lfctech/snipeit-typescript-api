@@ -1,20 +1,22 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const packDirectory = join(root, ".pack-test");
-rmSync(packDirectory, { recursive: true, force: true });
-mkdirSync(packDirectory, { recursive: true });
+const packDirectory = mkdtempSync(join(tmpdir(), "snipeit-pack-"));
+rmSync(join(root, "dist"), { recursive: true, force: true });
 execFileSync("pnpm", ["pack", "--pack-destination", packDirectory], { cwd: root, encoding: "utf8" });
 const packedFiles = readdirSync(packDirectory).filter((name) => name.endsWith(".tgz"));
 if (packedFiles.length !== 1 || packedFiles[0] === undefined) throw new Error(`Expected one packed archive, found: ${packedFiles.join(", ")}`);
 const tarball = join(packDirectory, packedFiles[0]);
 
 const archiveEntries = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" }).trim().split("\n");
-for (const required of ["package/docs/PARITY.md", "package/docs/ARCHITECTURE.md"]) {
+for (const required of [
+  "package/dist/index.js", "package/dist/index.d.ts", "package/dist/node.js", "package/dist/node.d.ts",
+  "package/docs/PARITY.md", "package/docs/ARCHITECTURE.md",
+]) {
   if (!archiveEntries.includes(required)) throw new Error(`Packed documentation missing: ${required}`);
 }
 const unresolvedMaps = archiveEntries.filter((entry) => entry.endsWith(".map"));
@@ -58,4 +60,5 @@ try {
 
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 if (!packageJson.exports?.["."] || !packageJson.exports?.["./node"]) throw new Error("packed exports missing");
-console.log("packed portable and Node consumers passed");
+rmSync(packDirectory, { recursive: true, force: true });
+console.log("packed portable and Node consumers passed from a missing-dist start");
