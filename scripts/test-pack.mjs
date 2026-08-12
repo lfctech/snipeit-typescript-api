@@ -13,6 +13,13 @@ const packedFiles = readdirSync(packDirectory).filter((name) => name.endsWith(".
 if (packedFiles.length !== 1 || packedFiles[0] === undefined) throw new Error(`Expected one packed archive, found: ${packedFiles.join(", ")}`);
 const tarball = join(packDirectory, packedFiles[0]);
 
+const archiveEntries = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" }).trim().split("\n");
+for (const required of ["package/docs/PARITY.md", "package/docs/ARCHITECTURE.md"]) {
+  if (!archiveEntries.includes(required)) throw new Error(`Packed documentation missing: ${required}`);
+}
+const unresolvedMaps = archiveEntries.filter((entry) => entry.endsWith(".map"));
+if (unresolvedMaps.length > 0) throw new Error(`Packed package must not contain unresolved maps: ${unresolvedMaps.join(", ")}`);
+
 function installConsumer(name, source) {
   const directory = mkdtempSync(join(tmpdir(), `snipeit-${name}-`));
   try {
