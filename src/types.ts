@@ -105,6 +105,28 @@ export interface MaintenanceCreateInput extends BaseCreateInput {
   readonly cost?: number | null;
 }
 
+/** Typed `GET hardware` filters; every field is a parameter confirmed against the Snipe-IT 8.2.0 description. */
+export interface AssetListQuery {
+  readonly limit?: number;
+  readonly offset?: number;
+  readonly search?: string;
+  readonly sort?: string;
+  readonly order?: AssetSortDirection;
+  readonly orderNumber?: string;
+  readonly statusId?: number;
+  readonly statusType?: AssetStatusType;
+  readonly locationId?: number;
+  readonly categoryId?: number;
+  readonly modelId?: number;
+  readonly manufacturerId?: number;
+  readonly companyId?: number;
+  readonly assignedTo?: number;
+  readonly assignedType?: string;
+}
+
+export type AssetSortDirection = "asc" | "desc";
+export type AssetStatusType = "RTD" | "Deployed" | "Undeployable" | "Deleted" | "Archived" | "Requestable";
+
 export interface AssetUpload {
   readonly name: string;
   readonly data: Blob;

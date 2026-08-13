@@ -4,10 +4,11 @@ import {
   SnipeITResponseError,
   SnipeITStateError,
 } from "./errors.js";
-import { SnipeITHttpClient, type JsonRequestOptions, type Query } from "./http.js";
+import { SnipeITHttpClient, type JsonRequestOptions, type Query, type QueryValue } from "./http.js";
+import { ReportsManager } from "./reports.js";
 import type {
   Accessory, AccessoryCreateInput, AccessoryUpdateInput, ActionOptions, ApiObject, Asset, AssetCreateInput,
-  AssetDownload, AssetUpdateInput, AssetUpload, Category, CategoryCreateInput, CategoryUpdateInput, CheckoutInput,
+  AssetDownload, AssetListQuery, AssetUpdateInput, AssetUpload, Category, CategoryCreateInput, CategoryUpdateInput, CheckoutInput,
   Company, CompanyCreateInput, CompanyUpdateInput, Component, ComponentCreateInput, ComponentUpdateInput,
   Consumable, ConsumableCreateInput, ConsumableUpdateInput, CustomFieldEntry, Department, DepartmentCreateInput,
   DepartmentUpdateInput, DownloadOptions, Field, FieldCreateInput, Fieldset, FieldsetCreateInput, FieldsetUpdateInput,
@@ -177,8 +178,73 @@ function withProgress(stream: ReadableStream<Uint8Array>, total: number | undefi
   });
 }
 
+/**
+ * Exhaustive camelCase to Snipe-IT snake_case table for GET hardware, hand-written so an
+ * unrecognized caller key is never forwarded upstream.
+ */
+const ASSET_QUERY_KEYS = {
+  limit: "limit",
+  offset: "offset",
+  search: "search",
+  sort: "sort",
+  order: "order",
+  orderNumber: "order_number",
+  statusId: "status_id",
+  statusType: "status",
+  locationId: "location_id",
+  categoryId: "category_id",
+  modelId: "model_id",
+  manufacturerId: "manufacturer_id",
+  companyId: "company_id",
+  assignedTo: "assigned_to",
+  assignedType: "assigned_type",
+} as const satisfies Readonly<Record<keyof AssetListQuery, string>>;
+
+const ASSET_INTEGER_KEYS: ReadonlySet<string> = new Set([
+  "limit", "offset", "statusId", "locationId", "categoryId", "modelId", "manufacturerId", "companyId", "assignedTo",
+]);
+
+export function serializeAssetListQuery(query: AssetListQuery = {}): Query {
+  const serialized: Record<string, QueryValue> = {};
+  for (const [key, value] of Object.entries(query)) {
+    if (value === undefined || value === null) continue;
+    if (!Object.prototype.hasOwnProperty.call(ASSET_QUERY_KEYS, key)) continue;
+    const mapped = ASSET_QUERY_KEYS[key as keyof typeof ASSET_QUERY_KEYS];
+    if (ASSET_INTEGER_KEYS.has(key)) {
+      if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+        throw new RangeError(`${key} must be a non-negative safe integer`);
+      }
+      serialized[mapped] = value;
+      continue;
+    }
+    serialized[mapped] = value as QueryValue;
+  }
+  return serialized;
+}
+
+function labelTags(assetsOrTags: readonly (string | Pick<Asset, "asset_tag">)[]): string[] {
+  if (assetsOrTags.length === 0) throw new TypeError("At least one asset or tag required");
+  const tags = assetsOrTags.flatMap((item) => {
+    const tag = typeof item === "string" ? item : item.asset_tag;
+    return typeof tag === "string" && tag.trim() !== "" ? [tag] : [];
+  });
+  if (tags.length === 0) throw new TypeError("No valid asset tags found");
+  return tags;
+}
+
+function labelHeaders(request: JsonRequestOptions): Headers {
+  const headers = new Headers(request.headers);
+  headers.set("accept", "application/pdf, application/json");
+  return headers;
+}
+
 export class AssetsManager extends ResourceManager<Asset, AssetCreateInput, AssetUpdateInput> {
   constructor(http: SnipeITHttpClient) { super(http, "hardware"); }
+
+  /** Typed sibling of `list` that serializes {@link AssetListQuery} to Snipe-IT parameter names. */
+  search(query: AssetListQuery = {}, request: JsonRequestOptions = {}): Promise<ListResponse<Asset>> {
+    return this.list(serializeAssetListQuery(query), request);
+  }
 
   override create(input: AssetCreateInput, request: JsonRequestOptions = {}): Promise<Asset> {
     const normalized: Record<string, unknown> = { ...input };
@@ -341,15 +407,8 @@ export class AssetsManager extends ResourceManager<Asset, AssetCreateInput, Asse
   }
 
   async labels(assetsOrTags: readonly (string | Pick<Asset, "asset_tag">)[], request: JsonRequestOptions = {}): Promise<Blob> {
-    if (assetsOrTags.length === 0) throw new TypeError("At least one asset or tag required");
-    const tags = assetsOrTags.flatMap((item) => {
-      const tag = typeof item === "string" ? item : item.asset_tag;
-      return typeof tag === "string" && tag.trim() !== "" ? [tag] : [];
-    });
-    if (tags.length === 0) throw new TypeError("No valid asset tags found");
-    const headers = new Headers(request.headers);
-    headers.set("accept", "application/pdf, application/json");
-    const response = await this.http.raw("POST", "hardware/labels", { ...request, headers, json: { asset_tags: tags } });
+    const tags = labelTags(assetsOrTags);
+    const response = await this.http.raw("POST", "hardware/labels", { ...request, headers: labelHeaders(request), json: { asset_tags: tags } });
     const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
     if (contentType.includes("application/pdf")) {
       const pdf = await response.blob();
@@ -375,6 +434,15 @@ export class AssetsManager extends ResourceManager<Asset, AssetCreateInput, Asse
     if (bytes.byteLength === 0) throw new SnipeITResponseError("Unexpected hardware/labels response: decoded PDF must not be empty");
     return new Blob([bytes], { type: "application/pdf" });
   }
+
+  /**
+   * Raw `hardware/labels` response for callers that must stream the PDF or read upstream
+   * headers; `labels` buffers the body into a `Blob` and discards the response metadata.
+   */
+  async labelsResponse(assetsOrTags: readonly (string | Pick<Asset, "asset_tag">)[], request: JsonRequestOptions = {}): Promise<Response> {
+    const tags = labelTags(assetsOrTags);
+    return this.http.raw("POST", "hardware/labels", { ...request, headers: labelHeaders(request), json: { asset_tags: tags } });
+  }
 }
 
 export interface Managers {
@@ -391,6 +459,7 @@ export interface Managers {
   readonly locations: LocationsManager;
   readonly manufacturers: ManufacturersManager;
   readonly models: ModelsManager;
+  readonly reports: ReportsManager;
   readonly statusLabels: StatusLabelsManager;
   readonly suppliers: SuppliersManager;
   readonly users: UsersManager;

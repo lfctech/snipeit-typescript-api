@@ -1,4 +1,5 @@
 import { SnipeITHttpClient, type JsonRequestOptions, type Query, type RequestOptions, type SnipeITHttpOptions } from "./http.js";
+import { ReportsManager } from "./reports.js";
 import {
   AccessoriesManager, AssetsManager, CategoriesManager, CompaniesManager, ComponentsManager, ConsumablesManager,
   DepartmentsManager, FieldsManager, FieldsetsManager, LicensesManager, LocationsManager, ManufacturersManager,
@@ -21,6 +22,7 @@ export class SnipeIT {
   readonly locations: LocationsManager;
   readonly manufacturers: ManufacturersManager;
   readonly models: ModelsManager;
+  readonly reports: ReportsManager;
   readonly statusLabels: StatusLabelsManager;
   readonly suppliers: SuppliersManager;
   readonly users: UsersManager;
@@ -41,6 +43,7 @@ export class SnipeIT {
     this.locations = new LocationsManager(this.http);
     this.manufacturers = new ManufacturersManager(this.http);
     this.models = new ModelsManager(this.http);
+    this.reports = new ReportsManager(this.http);
     this.statusLabels = new StatusLabelsManager(this.http);
     this.suppliers = new SuppliersManager(this.http);
     this.users = new UsersManager(this.http);
