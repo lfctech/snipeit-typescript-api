@@ -10,6 +10,8 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Typed plain-data managers for Accessories, Assets, Categories, Companies, Components, Consumables, Departments, Fields, Fieldsets, Licenses, Locations, Manufacturers, Models, Status Labels, Suppliers, and Users.
 - Common CRUD, page listing, and lazy `AsyncIterable` pagination for all managers.
 - Asset tag/serial lookups, checkout/check-in, audit/due/overdue, restore, maintenance, licenses, labels, and complete file operations.
+- Read-only activity report manager `reports.listActivity()` with an explicit typed query mapping, validated list shape, and null-safe `activityTimestamp`/`activityActorName`/`activityItemLabel` row readers.
+- Typed `assets.search()` asset filters and `assets.labelsResponse()` for streaming label PDFs with upstream headers.
 - Custom-field label reads, label-to-column writes, response reconciliation, repeated updates without refetch, and unknown-field validation.
 - Portable Blob/FormData/web-stream file APIs and isolated `@lfctech/snipeit/node` filesystem helpers.
 - Unit, contract, property, coverage, declaration, packed-consumer, Docker integration, and nodejs_compat-disabled local Workers validation.

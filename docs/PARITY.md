@@ -40,6 +40,7 @@ Reference baseline: `snipeit-python-api` commit `ce46003fce275f3d5ced05312af2904
 | Models | path models; create name/category/manufacturer | typed manager | contract + integration |
 | Status labels | non-obvious path `statuslabels`; create name/type | `statusLabels`, correct path | contract + integration |
 | Suppliers | path suppliers; create name | typed manager | contract + integration |
+| Activity report | Python has no wrapper; Snipe-IT 8.2.0 exposes read-only GET `reports/activity` with limit/offset/search/target_type/target_id/item_type/item_id/action_type/sort/order | `reports.listActivity(query)` with an explicit camelCase parameter table, list-shape validation, and null-safe row readers | unit + contract + declarations + Workers + pack |
 | Portability | Python uses sync HTTPX and fs | async web API core; optional Node export; Worker without compatibility | Workers + import scan |
 | Declaration compatibility | N/A | emitted using TS 7.0.2; consumed by pinned TS 5.7.3 | clean declaration consumer |
 | Packaging | N/A | pnpm ESM, exact versions, lockfile, clean portable and Node packed consumers | pack tests |
@@ -50,7 +51,7 @@ Reference baseline: `snipeit-python-api` commit `ce46003fce275f3d5ced05312af2904
 - Action methods take ids instead of binding behavior to mutable objects. Their default follow-up GET preserves the observable “refresh=true” behavior; `refresh:false` returns the action payload because there is no stale object to return.
 - Portable file APIs accept `Blob`/web streams and return web streams/`Blob`. Filesystem path convenience is exclusively in `@lfctech/snipeit/node`.
 - JavaScript caller cancellation remains distinguishable as `AbortError`; library timeouts map to `SnipeITTimeoutError`.
-- Groups, Reports, Settings, general audit logs, and maintenance resources beyond asset maintenance are deliberately outside the wrapper. Public raw verbs cover them.
+- Groups, Settings, general audit logs, and maintenance resources beyond asset maintenance are deliberately outside the wrapper. Public raw verbs cover them. Reports are covered only by the read-only activity report (`reports.listActivity`); no other report endpoint is wrapped.
 - Verified Snipe-IT v8.3.1 runtime contracts supersede stale Python mock-only assumptions for manager-style audit routing and maintenance creation. Both audit methods use `hardware/:id/audit`; maintenance posts the required schema to `maintenances`. Labels preserve the Python-facing PDF result while accepting both the pinned image's direct PDF and upstream's JSON/base64 response.
 - The Docker suite executes and requires success from the v8.3.1 uploaded-file DELETE route, but does not require the subsequent list to omit the record. The upstream controller resolves `Actionlog::find($file_id)->where(...)->first()`, which can report success without deleting the requested log; client route/response behavior remains unit- and runtime-tested.
 - Docker seed data marks fields for automatic fieldset association, so each newly created fieldset is immediately protected from deletion. The live suite asserts the structured `Fieldset is in use` error; the common manager contract independently verifies the fieldset DELETE route/success response, while the other 15 managers complete successful live DELETE/list-exclusion checks.
