@@ -25,7 +25,9 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm validate
+      - run: pnpm validate:node
+      - if: matrix.node-version == 22
+        run: pnpm test:workers
 
   docker:
     runs-on: ubuntu-latest

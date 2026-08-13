@@ -42,7 +42,8 @@
     "test:pack": "node scripts/test-pack.mjs",
     "test:workers": "pnpm build && node scripts/test-worker.mjs",
     "test:docker": "pnpm build && node scripts/test-docker.mjs",
-    "validate": "pnpm typecheck && pnpm test:coverage && pnpm test:declarations && pnpm test:examples && pnpm test:pack && pnpm test:workers"
+    "validate:node": "pnpm typecheck && pnpm test:coverage && pnpm test:declarations && pnpm test:examples && pnpm test:pack",
+    "validate": "pnpm validate:node && pnpm test:workers"
   },
   "devDependencies": {
     "@types/node": "22.19.7",
