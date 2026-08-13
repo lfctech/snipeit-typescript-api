@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const config = readFileSync(resolve(root, "tests/workers/wrangler.jsonc"), "utf8");
 if (/nodejs_compat/u.test(config)) throw new Error("Workers config must not enable nodejs_compat");
-for (const file of ["dist/index.js", "dist/client.js", "dist/http.js", "dist/resources.js", "dist/errors.js", "dist/version.js"]) {
+for (const file of ["dist/index.js", "dist/client.js", "dist/http.js", "dist/reports.js", "dist/resources.js", "dist/errors.js", "dist/version.js"]) {
   const source = readFileSync(resolve(root, file), "utf8");
   if (/from\s+["']node:|require\s*\(|process\.|\bBuffer\b|__dirname|__filename/u.test(source)) throw new Error(`Portable output contains a Node reference: ${file}`);
 }
@@ -77,7 +77,7 @@ try {
     }
   }
   if (result === undefined) throw new Error(`Timed out waiting for Worker:\n${output}`);
-  const names = ["import", "request", "pagination", "upload", "download", "cancellation", "errors"];
+  const names = ["import", "request", "pagination", "upload", "download", "cancellation", "errors", "reports"];
   for (const name of names) if (result.checks?.[name] !== true) throw new Error(`Missing Worker check: ${name}`);
   console.log(`Workers checks passed without nodejs_compat: ${names.join(", ")}`);
 } finally {

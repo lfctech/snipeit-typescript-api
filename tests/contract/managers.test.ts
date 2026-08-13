@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SnipeIT } from "../../src/client.js";
-import { ResourceManager } from "../../src/resources.js";
+import { ReportsManager } from "../../src/reports.js";
+import { ResourceManager, type Managers } from "../../src/resources.js";
 import type { Resource } from "../../src/types.js";
 
 const expected = {
@@ -53,6 +54,25 @@ describe("all resource managers", () => {
       await expect(manager.delete(1)).resolves.toBeUndefined();
     }
     expect(calls).toHaveLength(80);
+  });
+
+  it("exposes a read-only reports manager on the client and the Managers contract", async () => {
+    const paths: string[] = [];
+    const client = new SnipeIT({
+      baseUrl: "https://example.test",
+      token: "token",
+      fetch: async (input) => {
+        paths.push(new URL(String(input)).pathname);
+        return Response.json({ total: 1, rows: [{ id: 5, action_type: "checkout" }] });
+      },
+    });
+    expect(client.reports).toBeInstanceOf(ReportsManager);
+    expect(client.reports).not.toBeInstanceOf(ResourceManager);
+    const managers: Pick<Managers, "reports"> = client;
+    await expect(managers.reports.listActivity({ limit: 1 })).resolves.toMatchObject({ total: 1, rows: [{ id: 5 }] });
+    expect(paths).toEqual(["/api/v1/reports/activity"]);
+    const methods = Object.getOwnPropertyNames(ReportsManager.prototype).filter((name) => name !== "constructor");
+    expect(methods).toEqual(["listActivity"]);
   });
 
   it("exposes a safe client identity and raw verb façade", async () => {

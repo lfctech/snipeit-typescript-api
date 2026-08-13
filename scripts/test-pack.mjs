@@ -35,14 +35,19 @@ function installConsumer(name, source) {
 }
 
 installConsumer("portable", `
-import { SnipeIT, VERSION } from "@lfctech/snipeit";
+import { SnipeIT, VERSION, activityTimestamp } from "@lfctech/snipeit";
 const calls = [];
 const client = new SnipeIT({ baseUrl: "https://example.test", token: "token", fetch: async (input) => {
   calls.push(String(input));
-  return Response.json({ id: 1, username: "packed" });
+  return String(input).includes("reports/activity")
+    ? Response.json({ total: 1, rows: [{ id: 5, created_at: { datetime: "2026-08-12 09:00:00", formatted: "Wed Aug 12" } }] })
+    : Response.json({ id: 1, username: "packed" });
 }});
 const me = await client.users.me();
-if (me.username !== "packed" || VERSION !== "0.1.0" || calls.length !== 1) throw new Error("portable packed consumer failed");
+const activity = await client.reports.listActivity({ limit: 1, itemType: "asset" });
+if (!calls[1].includes("item_type=asset")) throw new Error("packed activity query serialization failed");
+if (activityTimestamp(activity.rows[0]) !== "2026-08-12 09:00:00") throw new Error("packed activity helper failed");
+if (me.username !== "packed" || VERSION !== "0.1.0" || calls.length !== 2) throw new Error("portable packed consumer failed");
 `);
 
 installConsumer("node", `

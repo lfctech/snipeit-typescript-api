@@ -1,4 +1,4 @@
-import { SnipeIT, SnipeITNotFoundError } from "../../dist/index.js";
+import { SnipeIT, SnipeITNotFoundError, activityActorName, activityItemLabel, activityTimestamp } from "../../dist/index.js";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -28,6 +28,11 @@ const mockFetch = async (input, init = {}) => {
   if (url.pathname.endsWith("/hardware/1/files/2") && init.method === "GET") {
     return new Response(encoder.encode("worker-download"), { headers: { "content-length": "15" } });
   }
+  if (url.pathname.endsWith("/reports/activity") && init.method === "GET") {
+    assert(url.searchParams.get("item_type") === "asset", "activity query was not serialized");
+    assert(url.searchParams.get("limit") === "1", "activity limit was not serialized");
+    return Response.json({ total: 1, rows: [{ id: 5, created_at: { datetime: "2026-08-12 09:00:00", formatted: "Wed Aug 12" }, user: { name: "Ada" }, item: { name: "Laptop" } }] });
+  }
   return Response.json({ ok: true });
 };
 
@@ -54,7 +59,14 @@ async function checks() {
 
   const missing = await client.get("missing").catch((error) => error);
   assert(missing instanceof SnipeITNotFoundError && missing.status === 404, "structured error failed");
-  return { import: true, request: true, pagination: true, upload: true, download: true, cancellation: true, errors: true };
+
+  const activity = await client.reports.listActivity({ limit: 1, itemType: "asset" });
+  const row = activity.rows[0];
+  assert(activity.total === 1 && row?.id === 5, "activity report failed");
+  assert(activityTimestamp(row) === "2026-08-12 09:00:00", "activity timestamp precedence failed");
+  assert(activityActorName(row) === "Ada", "activity actor name failed");
+  assert(activityItemLabel(row) === "Laptop", "activity item label failed");
+  return { import: true, request: true, pagination: true, upload: true, download: true, cancellation: true, errors: true, reports: true };
 }
 
 export default {
