@@ -2,6 +2,8 @@
 
 A production-oriented, fully typed Snipe-IT API client for TypeScript and JavaScript. The core uses only web APIs, works with an injected `fetch`, and is portable to Node 20+, browsers, Deno, Bun, and Cloudflare Workers without `nodejs_compat`. Filesystem conveniences live in the separate `@lfctech/snipeit/node` export.
 
+The minimum supported Snipe-IT runtime is 8.7.1.
+
 ## Install
 
 ```sh

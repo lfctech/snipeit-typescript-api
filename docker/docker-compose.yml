@@ -44,7 +44,7 @@ services:
       - db-data:/var/lib/mysql
 
   seeder:
-    image: snipe/snipe-it:v8.3.1-alpine
+    image: snipe/snipe-it:v8.7.1-alpine
     restart: "no"
     depends_on:
       db:
@@ -65,7 +65,7 @@ services:
       - ./api-token.txt:/api-token.txt
 
   app:
-    image: snipe/snipe-it:v8.3.1-alpine
+    image: snipe/snipe-it:v8.7.1-alpine
     restart: "no"
     depends_on:
       db:

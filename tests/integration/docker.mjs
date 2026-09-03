@@ -100,10 +100,17 @@ await client.assets.auditById(assetId, { note: "manager integration" });
 await client.assets.listAuditDue();
 await client.assets.listAuditOverdue();
 await client.assets.getLicenses(assetId);
+const maintenanceTypes = await client.get("maintenance-types", { limit: 50 });
+const maintenanceType = maintenanceTypes.rows?.find((item) => Number.isInteger(Number(item?.id)) && Number(item.id) > 0);
+assert(maintenanceType, "seeded maintenance type missing");
+const maintenanceTypeId = id(maintenanceType);
 const maintenance = await client.assets.createMaintenance(assetId, {
-  assetMaintenanceType: "Repair", supplierId: id(supplier), name: name("maintenance"),
+  maintenanceTypeId, supplierId: id(supplier), name: name("maintenance"),
   startDate: new Date().toISOString().slice(0, 10),
 });
+const persistedMaintenance = await client.get(`maintenances/${id(maintenance)}`);
+assert(id(persistedMaintenance.maintenance_type_details) === maintenanceTypeId,
+  "maintenance did not persist selected maintenance type");
 
 const pdfPrefix = "%PDF-1.4\n";
 const pdfSuffix = "\n%%EOF\n";
