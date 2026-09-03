@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { SnipeIT, SnipeITApiError } from "../../dist/index.js";
+import { SnipeIT } from "../../dist/index.js";
 
 const baseUrl = process.env.SNIPEIT_TEST_URL;
 const token = process.env.SNIPEIT_TEST_TOKEN;
@@ -161,14 +161,12 @@ await client.delete(`maintenances/${id(maintenance)}`);
 await removeAndVerify(client.assets, id(customAsset));
 await removeAndVerify(client.assets, id(restoreAsset));
 await removeAndVerify(client.models, id(customModel));
-const fieldsetDeleteError = await client.fieldsets.delete(id(deletableFieldset)).catch((error) => error);
-assert(fieldsetDeleteError instanceof SnipeITApiError && /in use/i.test(fieldsetDeleteError.message),
-  "seeded auto-added fields must produce the expected fieldset delete business error");
+await removeAndVerify(client.fieldsets, id(deletableFieldset));
 for (const { manager, resourceId } of verified.toReversed()) {
   if (manager.path !== "fieldsets") await removeAndVerify(manager, resourceId);
 }
 
 console.log(JSON.stringify({
-  ok: true, managers: 16, deleteCoverage: "15 success + fieldset in-use error", assetActions: true, accessoryCheckin: true,
+  ok: true, managers: 16, deleteCoverage: "16 success", assetActions: true, accessoryCheckin: true,
   customFields: true, files: true, labels: true, maintenance: true, restore: true,
 }));
