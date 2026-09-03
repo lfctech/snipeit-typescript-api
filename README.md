@@ -2,6 +2,8 @@
 
 A production-oriented, fully typed Snipe-IT API client for TypeScript and JavaScript. The core uses only web APIs, works with an injected `fetch`, and is portable to Node 20+, browsers, Deno, Bun, and Cloudflare Workers without `nodejs_compat`. Filesystem conveniences live in the separate `@lfctech/snipeit/node` export.
 
+The minimum supported Snipe-IT runtime is 8.7.1.
+
 ## Install
 
 ```sh
@@ -89,7 +91,17 @@ await snipe.assets.audit(42, { locationId: 3 });
 await snipe.assets.restore(42);
 ```
 
-`checkout`, `checkin`, `audit`, and `restore` perform a follow-up GET by default and return the fresh asset. Pass `{ refresh: false }` as the final argument to skip that round trip and receive the action response. Manager-style `auditById` returns the raw audit response. `listAuditDue`, `listAuditOverdue`, `createMaintenance`, and `getLicenses` cover the remaining supported asset endpoints.
+`checkout`, `checkin`, `audit`, and `restore` perform a follow-up GET by default and return the fresh asset. Pass `{ refresh: false }` as the final argument to skip that round trip and receive the action response. Manager-style `auditById` returns the raw audit response. `listAuditDue`, `listAuditOverdue`, and `getLicenses` cover the remaining supported asset endpoints. Maintenance creation uses Snipe-IT 8.7.1's maintenance type identifier contract:
+
+```ts
+await snipe.assets.createMaintenance(42, {
+  maintenanceTypeId: 2,
+  name: "Replace battery",
+  startDate: "2026-09-03",
+});
+```
+
+The client serializes `maintenanceTypeId` as `maintenance_type_id` and injects the asset's `asset_id`.
 
 ## Custom fields
 

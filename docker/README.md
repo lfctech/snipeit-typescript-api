@@ -1,6 +1,6 @@
 # Independent Docker integration
 
-`pnpm test:docker` starts a throwaway, project-scoped Snipe-IT v8.3.1 and MariaDB 11.4.7 stack on port 18080. It does not use the Python repository's containers, network, token, files, or default port.
+`pnpm test:docker` starts a throwaway, project-scoped Snipe-IT v8.7.1 and MariaDB 11.4.7 stack on port 18080. It does not use the Python repository's containers, network, token, files, or default port.
 
 The runner removes only the `snipeit-typescript-integration` Compose project's old volumes, creates an empty ignored `api-token.txt`, starts the database/seeder/application, and waits for **both**:
 
