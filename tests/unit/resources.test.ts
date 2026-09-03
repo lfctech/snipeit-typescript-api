@@ -107,7 +107,7 @@ describe("asset lookup and actions", () => {
     await assets.listAuditOverdue();
     await assets.getLicenses(1);
     await expect(assets.createMaintenance(1, {
-      assetMaintenanceType: "Repair", name: "Fix", startDate: "2026-08-12", supplierId: 2,
+      maintenanceTypeId: 3, name: "Fix", startDate: "2026-08-12", supplierId: 2,
     })).resolves.toEqual({ id: 44 });
     expect(calls.map(({ method, path }) => `${method} ${path}`)).toEqual([
       "POST /api/v1/hardware/1/checkin", "POST /api/v1/hardware/1/audit", "POST /api/v1/hardware/1/audit",
@@ -115,8 +115,9 @@ describe("asset lookup and actions", () => {
       "GET /api/v1/hardware/1/licenses", "POST /api/v1/maintenances",
     ]);
     expect(calls.at(-1)?.body).toEqual({
-      asset_maintenance_type: "Repair", name: "Fix", start_date: "2026-08-12", supplier_id: 2, asset_id: 1,
+      maintenance_type_id: 3, name: "Fix", start_date: "2026-08-12", supplier_id: 2, asset_id: 1,
     });
+    expect(calls.at(-1)?.body).not.toHaveProperty("asset_maintenance_type");
   });
 
   it("omits a blank asset tag for server auto-increment", async () => {
