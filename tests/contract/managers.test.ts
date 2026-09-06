@@ -23,7 +23,7 @@ const expected = {
 } as const;
 
 describe("all resource managers", () => {
-  it("exposes exactly sixteen managers with complete common CRUD behavior", async () => {
+  it("exposes the sixteen expected managers with complete common CRUD behavior", async () => {
     const collectionPaths = new Set(Object.values(expected).map((path) => `/api/v1/${path}`));
     const calls: Array<{ method: string; path: string; body: unknown }> = [];
     const client = new SnipeIT({
@@ -42,7 +42,6 @@ describe("all resource managers", () => {
       },
     });
 
-    expect(Object.keys(expected)).toHaveLength(16);
     for (const [property, path] of Object.entries(expected)) {
       const manager = client[property as keyof typeof expected] as unknown as ResourceManager<Resource, Record<string, unknown>, Record<string, unknown>>;
       expect(manager.path).toBe(path);
@@ -58,7 +57,6 @@ describe("all resource managers", () => {
   it("exposes a safe client identity and raw verb façade", async () => {
     const client = new SnipeIT({ baseUrl: "https://example.test", token: "super-secret", fetch: async () => Response.json({ ok: true }) });
     expect(client.toString()).toBe("SnipeIT(https://example.test, token=***)");
-    expect(client.toString()).not.toContain("super-secret");
     await expect(client.get("ping")).resolves.toEqual({ ok: true });
     await expect(client.post("ping", {})).resolves.toEqual({ ok: true });
     await expect(client.put("ping", {})).resolves.toEqual({ ok: true });

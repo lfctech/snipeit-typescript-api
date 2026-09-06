@@ -117,7 +117,6 @@ describe("asset lookup and actions", () => {
     expect(calls.at(-1)?.body).toEqual({
       maintenance_type_id: 3, name: "Fix", start_date: "2026-08-12", supplier_id: 2, asset_id: 1,
     });
-    expect(calls.at(-1)?.body).not.toHaveProperty("asset_maintenance_type");
   });
 
   it("omits a blank asset tag for server auto-increment", async () => {

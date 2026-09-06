@@ -38,7 +38,6 @@ describe("SnipeITHttpClient", () => {
     const client = make(async () => json({}));
     expect(client.timeoutMs).toBe(10_000);
     expect(client.toString()).toBe("SnipeITHttpClient(https://snipe.example.test, token=***)");
-    expect(client.toString()).not.toContain("secret-token");
   });
 
   it("builds API URLs, serializes query/JSON and enforces auth", async () => {
