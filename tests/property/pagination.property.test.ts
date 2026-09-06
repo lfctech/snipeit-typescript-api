@@ -25,7 +25,6 @@ describe("pagination properties", () => {
         for await (const item of assets.iterate(options)) found.push(Number(item.id));
         const expectedCount = Math.min(total, requestedLimit ?? total);
         expect(found).toEqual(Array.from({ length: expectedCount }, (_, index) => index));
-        expect(new Set(found).size).toBe(found.length);
         for (const call of calls) {
           expect(call.offset).toBeLessThanOrEqual(expectedCount);
           expect(call.limit).toBeLessThanOrEqual(pageSize);
