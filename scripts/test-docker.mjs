@@ -88,16 +88,21 @@ try {
   while (Date.now() < deadline) {
     try { token = readFileSync(tokenPath, "utf8").trim(); } catch { token = ""; }
     if (token !== "") {
+      const controller = new AbortController();
+      // AbortSignal.timeout uses an unref'd timer. Keep the readiness request
+      // alive during cold startup even if fetch has no other active handles.
+      const timeout = setTimeout(() => controller.abort(), Math.min(3_000, Math.max(1, deadline - Date.now())));
       try {
         const response = await fetch(`${baseUrl}/api/v1/users/me`, {
           headers: { authorization: `Bearer ${token}`, accept: "application/json" },
-          signal: AbortSignal.timeout(Math.min(3_000, Math.max(1, deadline - Date.now()))),
+          signal: controller.signal,
         });
         if (response.ok) {
           const body = await response.json();
           if (body && typeof body === "object" && body.id) { readiness = body; break; }
         }
       } catch { /* app is not listening yet */ }
+      finally { clearTimeout(timeout); }
     }
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) break;
