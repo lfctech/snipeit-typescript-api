@@ -5,6 +5,12 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ## [Unreleased]
 
 ### Internal / testing
+- Update Vitest and coverage-v8 to 4.1.11 for GHSA-82fw-gwwq-j7x9.
+- Resolve development-tool advisories with scoped security overrides:
+  Miniflare's Sharp 0.35.5 and Undici 7.29.1, and magicast/PostCSS's
+  source-map-js 1.2.2. Retain the pinned Wrangler/Miniflare versions and
+  supported Node lanes; remove overrides when their upstream dependency
+  declarations select patched versions. These packages are development-only.
 - Run Docker integration CI against Snipe-IT 8.8.0 alongside the minimum
   supported 8.7.1 runtime; select either local image with `SNIPEIT_IMAGE`.
 - Keep cold-start readiness requests alive until their bounded timeout, and
