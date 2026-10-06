@@ -1,5 +1,9 @@
 # Independent Docker integration
 
+CI tests both the minimum supported Snipe-IT 8.7.1 and Snipe-IT 8.8.0. Select
+the 8.8.0 lane locally with
+`SNIPEIT_IMAGE=snipe/snipe-it:v8.8.0-alpine pnpm test:docker`.
+
 `pnpm test:docker` starts a throwaway, project-scoped Snipe-IT v8.7.1 and MariaDB 11.4.7 stack on port 18080. It does not use the Python repository's containers, network, token, files, or default port.
 
 The runner removes only the `snipeit-typescript-integration` Compose project's old volumes, creates an empty ignored `api-token.txt`, starts the database/seeder/application, and waits for **both**:

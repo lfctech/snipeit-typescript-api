@@ -30,8 +30,15 @@ jobs:
         run: pnpm test:workers
 
   docker:
+    name: docker (Snipe-IT ${{ matrix.snipeit-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        snipeit-version: ["8.7.1", "8.8.0"]
+    env:
+      SNIPEIT_IMAGE: snipe/snipe-it:v${{ matrix.snipeit-version }}-alpine
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

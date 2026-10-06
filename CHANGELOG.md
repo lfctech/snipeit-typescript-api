@@ -4,6 +4,12 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Internal / testing
+- Run Docker integration CI against Snipe-IT 8.8.0 alongside the minimum
+  supported 8.7.1 runtime; select either local image with `SNIPEIT_IMAGE`.
+- Keep cold-start readiness requests alive until their bounded timeout, and
+  remove custom fieldset dependencies before deleting test fields on 8.8.0.
+
 ### Added
 - Portable ESM TypeScript client built with strict TypeScript 7.0.2 and verified declarations for TypeScript 5.7.3.
 - Injected-fetch HTTP core with bearer authentication, caller cancellation, timeouts, safe configurable retries, exponential full jitter, `Retry-After`, replay-safe body handling, raw verbs, malformed/empty response checks, structured errors, and secret-redacted structured logging.
