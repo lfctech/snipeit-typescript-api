@@ -54,6 +54,20 @@ async function removeFieldsetAndVerify(resourceId) {
   await removeAndVerify(client.fieldsets, resourceId);
 }
 
+async function removeFieldAndVerify(resourceId) {
+  // Remove only this test field's associations from remaining fieldsets.
+  for await (const fieldset of client.fieldsets.iterate()) {
+    const fieldsetId = id(fieldset);
+    const fields = await client.post(`fieldsets/${fieldsetId}/fields`, {});
+    if (fields.rows.some((field) => id(field) === resourceId)) {
+      await client.post(`fields/${resourceId}/disassociate`, { fieldset_id: fieldsetId });
+      const remaining = await client.post(`fieldsets/${fieldsetId}/fields`, {});
+      assert(!remaining.rows.some((field) => id(field) === resourceId), "test field association remains");
+    }
+  }
+  await removeAndVerify(client.fields, resourceId);
+}
+
 const me = await client.users.me();
 assert(id(me) > 0, "authenticated current user failed");
 
@@ -89,7 +103,7 @@ await verify(client.companies, { name: name("company") }, { name: name("company-
 await verify(client.components, { name: name("component"), qty: 2, categoryId: id(categoryComponent), manufacturerId: id(manufacturer) }, { qty: 3 });
 await verify(client.consumables, { name: name("consumable"), qty: 5, categoryId: id(categoryConsumable), manufacturerId: id(manufacturer) }, { qty: 4 });
 await verify(client.departments, { name: name("department") }, { name: name("department-updated") });
-await verify(client.fields, { name: name("field"), element: "text", autoAddToFieldsets: false }, { name: name("field-updated") });
+await verify(client.fields, { name: name("field"), element: "text" }, { name: name("field-updated") });
 const deletableFieldset = await verify(client.fieldsets, { name: name("fieldset") }, { name: name("fieldset-updated") });
 await verify(client.licenses, { name: name("license"), seats: 1, categoryId: id(categoryLicense) }, { seats: 2 });
 const supplier = await verify(client.suppliers, { name: name("supplier") }, { name: name("supplier-updated") });
@@ -142,7 +156,7 @@ const labelPdf = await client.assets.labels([tag]);
 assert(labelPdf.size > 0 && labelPdf.type === "application/pdf", "label PDF failed");
 
 const fieldLabel = name("custom-field");
-const field = await client.fields.create({ name: fieldLabel, element: "text", autoAddToFieldsets: false });
+const field = await client.fields.create({ name: fieldLabel, element: "text" });
 const fieldset = await client.fieldsets.create({ name: name("custom-fieldset") });
 await client.post(`fields/${id(field)}/associate`, { fieldset_id: id(fieldset) });
 const customModel = await client.models.create({
@@ -171,10 +185,11 @@ await removeAndVerify(client.assets, id(customAsset));
 await removeAndVerify(client.assets, id(restoreAsset));
 await removeAndVerify(client.models, id(customModel));
 await removeFieldsetAndVerify(id(fieldset));
-await removeAndVerify(client.fields, id(field));
+await removeFieldAndVerify(id(field));
 await removeFieldsetAndVerify(id(deletableFieldset));
 for (const { manager, resourceId } of verified.toReversed()) {
-  if (manager.path !== "fieldsets") await removeAndVerify(manager, resourceId);
+  if (manager.path === "fields") await removeFieldAndVerify(resourceId);
+  else if (manager.path !== "fieldsets") await removeAndVerify(manager, resourceId);
 }
 
 console.log(JSON.stringify({
